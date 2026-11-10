@@ -215,7 +215,7 @@ export default function Settings({ loaderData }: Route.ComponentProps) {
             <h2 className="text-lg font-semibold">Pending Refund Request</h2>
             <p className="text-sm text-muted-foreground">
               {pendingRefundRequests.length === 1
-                ? "One refundRequest is waiting on us."
+                ? "One refund request is waiting on us."
                 : `${pendingRefundRequests.length} refund requests are waiting on us.`}
             </p>
           </CardHeader>
