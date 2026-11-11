@@ -17,9 +17,11 @@ import {
 import { and, eq, inArray, isNotNull, sql } from "drizzle-orm";
 import { parseFormData, parseParams } from "~/lib/validation";
 import { formatPrice } from "~/lib/utils";
-import { canRaiseRefundRequest } from "~/lib/refund-requests.server";
+import {
+  canRaiseRefundRequest,
+  REFUND_WINDOW_DAYS,
+} from "~/lib/refund-requests.server";
 
-const REFUND_WINDOW_DAYS = 14;
 const MAX_WATCHED_HOURS = 2;
 
 const refundParamsSchema = z.object({

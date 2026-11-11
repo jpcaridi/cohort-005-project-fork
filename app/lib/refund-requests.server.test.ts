@@ -372,6 +372,33 @@ describe("an Admin raising a Refund Request for a learner", () => {
     ).toBe(409);
   });
 
+  it("isn't allowed for a team purchase, even before any seat is claimed", () => {
+    const purchase = buyCourse();
+    const team = testDb.insert(schema.teams).values({}).returning().get();
+    testDb
+      .insert(schema.coupons)
+      .values({
+        teamId: team.id,
+        courseId: base.course.id,
+        code: "TEAM-SEAT-UNCLAIMED",
+        purchaseId: purchase.id,
+      })
+      .run();
+
+    expect(
+      rejectionStatus(() =>
+        raiseRefundRequestForLearner(
+          purchase.id,
+          admin.id,
+          "Agreed by email.",
+          7900,
+          null,
+          NOW
+        )
+      )
+    ).toBe(403);
+  });
+
   it("isn't allowed for a claimed team seat", () => {
     const purchase = buyCourse();
     const team = testDb.insert(schema.teams).values({}).returning().get();
@@ -618,11 +645,29 @@ describe("the decision screen", () => {
       courseSeconds: 1800,
       lessonsWithoutDuration: 1,
     });
-    expect(facts.dayOfWindowWhenRequested).toBe(5);
-    expect(facts.refundWindowDays).toBe(14);
+    expect(facts.refundWindow).toEqual({
+      days: 14,
+      daysAfterPurchaseWhenRequested: 5,
+      daysAfterPurchaseToday: 9,
+      isOpenToday: true,
+    });
     expect(facts.amountPaid).toBe(7900);
     expect(facts.learnerName).toBe("Test User");
     expect(facts.courseTitle).toBe("Test Course");
+  });
+
+  it("shows the refund window as closed once 14 days have passed", () => {
+    const purchase = buyCourse(7900, 20);
+    const request = openRequest(purchase.id, 10);
+
+    const facts = getRefundRequestFacts(request.id, admin.id, NOW);
+
+    expect(facts.refundWindow).toEqual({
+      days: 14,
+      daysAfterPurchaseWhenRequested: 10,
+      daysAfterPurchaseToday: 20,
+      isOpenToday: false,
+    });
   });
 
   it("shows quiz attempts", () => {

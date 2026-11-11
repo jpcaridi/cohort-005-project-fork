@@ -1,15 +1,5 @@
 import { data } from "react-router";
-import {
-  and,
-  desc,
-  eq,
-  inArray,
-  isNotNull,
-  lt,
-  ne,
-  sql,
-  type SQL,
-} from "drizzle-orm";
+import { and, desc, eq, inArray, lt, ne, sql, type SQL } from "drizzle-orm";
 import { db } from "~/db";
 import { formatPrice } from "~/lib/utils";
 import {
@@ -30,6 +20,8 @@ import {
   users,
   videoWatchEvents,
 } from "~/db/schema";
+
+type Purchase = typeof purchases.$inferSelect;
 
 // ─── Refund Requests ───
 // The rules for deciding a Refund Request and tracking its Refund. Vocabulary
@@ -96,7 +88,7 @@ export function logRefundEmail(email: RefundEmail) {
   console.log(`[email] to=${email.to} subject=${email.subject}\n${email.body}`);
 }
 
-function getLearnerAndCourse(purchase: typeof purchases.$inferSelect) {
+function getLearnerAndCourse(purchase: Purchase) {
   const learner = db
     .select()
     .from(users)
@@ -114,7 +106,7 @@ function getLearnerAndCourse(purchase: typeof purchases.$inferSelect) {
 }
 
 function buildEmail(
-  purchase: typeof purchases.$inferSelect,
+  purchase: Purchase,
   subject: string,
   lines: string[]
 ): RefundEmail {
@@ -133,7 +125,7 @@ function buildEmail(
 }
 
 function buildApprovedEmail(
-  purchase: typeof purchases.$inferSelect,
+  purchase: Purchase,
   amount: number,
   reason: string | null
 ) {
@@ -155,7 +147,7 @@ function blankToNull(text: string | null) {
 
 /** Checks the amount and returns the reason to record with the decision. */
 function checkRefund(
-  purchase: typeof purchases.$inferSelect,
+  purchase: Purchase,
   amount: number,
   reason: string | null
 ) {
@@ -167,10 +159,12 @@ function checkRefund(
   return decisionReason;
 }
 
+type Transaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
+
 // Approval ends the enrollment. Progress, watch history, quiz attempts,
 // comments and the rating are kept.
-function endAccess(purchase: typeof purchases.$inferSelect) {
-  db.delete(enrollments)
+function endAccess(tx: Transaction, purchase: Purchase) {
+  tx.delete(enrollments)
     .where(
       and(
         eq(enrollments.userId, purchase.userId),
@@ -196,20 +190,22 @@ export function approveRefundRequest(
   const purchase = getPurchase(refundRequest.purchaseId);
   const decisionReason = checkRefund(purchase, amount, reason);
 
-  db.update(refundRequests)
-    .set({
-      status: RefundRequestStatus.Approved,
-      resolvedAt: now.toISOString(),
-      resolvedByUserId: adminId,
-      decisionReason,
-      amountRefunded: amount,
-      refundStatus: RefundStatus.Pending,
-      refundUpdatedAt: now.toISOString(),
-    })
-    .where(eq(refundRequests.id, refundRequestId))
-    .run();
-
-  endAccess(purchase);
+  // The decision and the end of access land together or not at all.
+  db.transaction((tx) => {
+    tx.update(refundRequests)
+      .set({
+        status: RefundRequestStatus.Approved,
+        resolvedAt: now.toISOString(),
+        resolvedByUserId: adminId,
+        decisionReason,
+        amountRefunded: amount,
+        refundStatus: RefundStatus.Pending,
+        refundUpdatedAt: now.toISOString(),
+      })
+      .where(eq(refundRequests.id, refundRequestId))
+      .run();
+    endAccess(tx, purchase);
+  });
 
   return { email: buildApprovedEmail(purchase, amount, decisionReason) };
 }
@@ -272,12 +268,16 @@ export function canRaiseRefundRequest(purchaseId: number) {
     .get();
 }
 
-/** A seat from a team licence that has been claimed belongs to the team. */
-export function isClaimedTeamSeat(purchaseId: number) {
+/**
+ * A purchase of team seats, claimed or not. Refunding team purchases needs its
+ * own decisions (see the non-goals in issue #4), so Admins can't refund them
+ * here yet.
+ */
+export function isTeamPurchase(purchaseId: number) {
   return !!db
     .select({ id: coupons.id })
     .from(coupons)
-    .where(and(eq(coupons.purchaseId, purchaseId), isNotNull(coupons.redeemedAt)))
+    .where(eq(coupons.purchaseId, purchaseId))
     .get();
 }
 
@@ -306,30 +306,32 @@ export function raiseRefundRequestForLearner(
       { status: 409 }
     );
   }
-  if (isClaimedTeamSeat(purchase.id)) {
-    throw data("A claimed team seat cannot be refunded.", { status: 403 });
+  if (isTeamPurchase(purchase.id)) {
+    throw data("Team seat purchases can't be refunded yet.", { status: 403 });
   }
   const decisionReason = checkRefund(purchase, amount, reason);
 
-  const raised = db
-    .insert(refundRequests)
-    .values({
-      purchaseId: purchase.id,
-      status: RefundRequestStatus.Approved,
-      reason: requestReason,
-      raisedByUserId: adminId,
-      requestedAt: now.toISOString(),
-      resolvedAt: now.toISOString(),
-      resolvedByUserId: adminId,
-      decisionReason,
-      amountRefunded: amount,
-      refundStatus: RefundStatus.Pending,
-      refundUpdatedAt: now.toISOString(),
-    })
-    .returning()
-    .get();
-
-  endAccess(purchase);
+  const raised = db.transaction((tx) => {
+    const inserted = tx
+      .insert(refundRequests)
+      .values({
+        purchaseId: purchase.id,
+        status: RefundRequestStatus.Approved,
+        reason: requestReason,
+        raisedByUserId: adminId,
+        requestedAt: now.toISOString(),
+        resolvedAt: now.toISOString(),
+        resolvedByUserId: adminId,
+        decisionReason,
+        amountRefunded: amount,
+        refundStatus: RefundStatus.Pending,
+        refundUpdatedAt: now.toISOString(),
+      })
+      .returning()
+      .get();
+    endAccess(tx, purchase);
+    return inserted;
+  });
 
   return {
     refundRequest: raised,
@@ -512,6 +514,21 @@ export function listRefundRequests(viewerId: number, now: Date) {
 /** The refund window, in calendar days from the purchase. */
 export const REFUND_WINDOW_DAYS = 14;
 
+// The window runs from the purchase day to the 14th calendar day after it,
+// inclusive, matching the learner's refund route.
+function refundWindowFacts(purchase: Purchase, requestedAt: string, now: Date) {
+  const daysAfterPurchaseToday = calendarDaysBetween(purchase.createdAt, now);
+  return {
+    days: REFUND_WINDOW_DAYS,
+    daysAfterPurchaseWhenRequested: calendarDaysBetween(
+      purchase.createdAt,
+      new Date(requestedAt)
+    ),
+    daysAfterPurchaseToday,
+    isOpenToday: daysAfterPurchaseToday <= REFUND_WINDOW_DAYS,
+  };
+}
+
 // Furthest point reached in each lesson, summed — the same measure the refund
 // route uses for the watched-hours limit.
 function secondsWatched(userId: number, lessonIds: number[], before?: string) {
@@ -622,11 +639,7 @@ export function getRefundRequestFacts(
     courseTitle: row.courseTitle,
     amountPaid: purchase.amountPaid,
     purchasedAt: purchase.createdAt,
-    refundWindowDays: REFUND_WINDOW_DAYS,
-    dayOfWindowWhenRequested: calendarDaysBetween(
-      purchase.createdAt,
-      new Date(refundRequest.requestedAt)
-    ),
+    refundWindow: refundWindowFacts(purchase, refundRequest.requestedAt, now),
     lessons: { completed, total: courseLessons.length },
     watched: {
       secondsBeforeRequest,

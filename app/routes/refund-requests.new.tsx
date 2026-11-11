@@ -3,13 +3,13 @@ import { data, isRouteErrorResponse, Link } from "react-router";
 import { z } from "zod";
 import { desc, eq } from "drizzle-orm";
 import type { Route } from "./+types/refund-requests.new";
-import { getCurrentUserId } from "~/lib/session";
+import { requireUserId } from "~/lib/access.server";
 import { badRequestMessage, parseFormData } from "~/lib/validation";
 import { db } from "~/db";
 import { courses, purchases, UserRole, users } from "~/db/schema";
 import {
   canRaiseRefundRequest,
-  isClaimedTeamSeat,
+  isTeamPurchase,
   logRefundEmail,
   raiseRefundRequestForLearner,
 } from "~/lib/refund-requests.server";
@@ -44,10 +44,7 @@ export function meta() {
 }
 
 async function requireAdminId(request: Request) {
-  const currentUserId = await getCurrentUserId(request);
-  if (!currentUserId) {
-    throw data("Select a user from the DevUI panel.", { status: 401 });
-  }
+  const currentUserId = await requireUserId(request);
   const user = db
     .select({ role: users.role })
     .from(users)
@@ -60,7 +57,7 @@ async function requireAdminId(request: Request) {
 }
 
 // Purchases an Admin could refund: no Open or Approved Refund Request, and not
-// a claimed team seat.
+// a team seat purchase.
 function getRefundablePurchases() {
   return db
     .select({
@@ -80,7 +77,7 @@ function getRefundablePurchases() {
       (purchase) =>
         purchase.amountPaid > 0 &&
         canRaiseRefundRequest(purchase.id) &&
-        !isClaimedTeamSeat(purchase.id)
+        !isTeamPurchase(purchase.id)
     );
 }
 
@@ -141,9 +138,9 @@ export default function RaiseRefund({ loaderData }: Route.ComponentProps) {
         <CardHeader>
           <h1 className="text-2xl font-bold">Raise a refund</h1>
           <p className="text-sm text-muted-foreground">
-            For a refund agreed with the learner outside the app. It is
-            approved as it is raised, ignoring the 14-day window and the
-            watched-hours limit. The learner loses access straight away.
+            For a refund agreed with the learner outside the app. It is approved
+            as it is raised, ignoring the 14-day window and the watched-hours
+            limit. The learner loses access straight away.
           </p>
         </CardHeader>
         <CardContent>
@@ -199,7 +196,9 @@ export default function RaiseRefund({ loaderData }: Route.ComponentProps) {
             </div>
 
             <div className="space-y-2">
-              <Label htmlFor="reason">Reason (needed for a Partial Refund)</Label>
+              <Label htmlFor="reason">
+                Reason (needed for a Partial Refund)
+              </Label>
               <Textarea id="reason" name="reason" rows={2} />
             </div>
 

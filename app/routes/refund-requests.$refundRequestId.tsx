@@ -2,7 +2,7 @@ import { useFetcher } from "react-router";
 import { data, isRouteErrorResponse, Link } from "react-router";
 import { z } from "zod";
 import type { Route } from "./+types/refund-requests.$refundRequestId";
-import { getCurrentUserId } from "~/lib/session";
+import { requireUserId } from "~/lib/access.server";
 import {
   badRequestMessage,
   parseFormData,
@@ -56,22 +56,14 @@ export function meta() {
   return [{ title: "Refund Request — Cadence" }];
 }
 
-async function requireSignedIn(request: Request) {
-  const currentUserId = await getCurrentUserId(request);
-  if (!currentUserId) {
-    throw data("Select a user from the DevUI panel.", { status: 401 });
-  }
-  return currentUserId;
-}
-
 export async function loader({ params, request }: Route.LoaderArgs) {
-  const currentUserId = await requireSignedIn(request);
+  const currentUserId = await requireUserId(request);
   const { refundRequestId } = parseParams(params, paramsSchema);
   return getRefundRequestFacts(refundRequestId, currentUserId, new Date());
 }
 
 export async function action({ params, request }: Route.ActionArgs) {
-  const currentUserId = await requireSignedIn(request);
+  const currentUserId = await requireUserId(request);
   const { refundRequestId } = parseParams(params, paramsSchema);
   const parsed = parseFormData(await request.formData(), actionSchema);
 
@@ -129,7 +121,13 @@ function hours(seconds: number) {
   return (seconds / 3600).toFixed(1);
 }
 
-function Fact({ label, children }: { label: string; children: React.ReactNode }) {
+function Fact({
+  label,
+  children,
+}: {
+  label: string;
+  children: React.ReactNode;
+}) {
   return (
     <div>
       <dt className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
@@ -233,8 +231,8 @@ function RefundPanel({ refundStatus }: { refundStatus: RefundStatus }) {
             : "Send the Refund"}
         </h2>
         <p className="text-sm text-muted-foreground">
-          Mark it Issued once the money has been sent, or Failed if it
-          couldn't be. A Failed Refund can be retried.
+          Mark it Issued once the money has been sent, or Failed if it couldn't
+          be. A Failed Refund can be retried.
         </p>
       </CardHeader>
       <CardContent className="flex flex-col gap-4 md:flex-row md:items-end">
@@ -244,7 +242,10 @@ function RefundPanel({ refundStatus }: { refundStatus: RefundStatus }) {
             Mark Issued
           </Button>
         </issued.Form>
-        <failed.Form method="post" className="flex flex-1 flex-col gap-2 md:flex-row md:items-end">
+        <failed.Form
+          method="post"
+          className="flex flex-1 flex-col gap-2 md:flex-row md:items-end"
+        >
           <input type="hidden" name="intent" value="failed" />
           <div className="flex-1 space-y-2">
             <Label htmlFor="failure-reason">Why it failed (optional)</Label>
@@ -322,8 +323,16 @@ export default function RefundRequestPage({
               {new Date(facts.purchasedAt).toLocaleDateString()}
             </Fact>
             <Fact label="Refund window">
-              Asked on day {facts.dayOfWindowWhenRequested} of{" "}
-              {facts.refundWindowDays}
+              Raised {facts.refundWindow.daysAfterPurchaseWhenRequested}{" "}
+              {facts.refundWindow.daysAfterPurchaseWhenRequested === 1
+                ? "day"
+                : "days"}{" "}
+              after purchase
+              <span className="block text-xs text-muted-foreground">
+                Today is {facts.refundWindow.daysAfterPurchaseToday} days in;
+                the {facts.refundWindow.days}-day window is{" "}
+                {facts.refundWindow.isOpenToday ? "still open" : "closed"}
+              </span>
             </Fact>
             <Fact label="Lessons completed">
               {facts.lessons.completed} of {facts.lessons.total} lessons
@@ -385,7 +394,9 @@ export default function RefundRequestPage({
         </Card>
       )}
 
-      {facts.canDecide && isOpen && <DecidePanel amountPaid={facts.amountPaid} />}
+      {facts.canDecide && isOpen && (
+        <DecidePanel amountPaid={facts.amountPaid} />
+      )}
       {facts.canDecide && refundUnsent && refundRequest.refundStatus && (
         <RefundPanel refundStatus={refundRequest.refundStatus} />
       )}
@@ -436,7 +447,8 @@ export default function RefundRequestPage({
 
 export function ErrorBoundary({ error }: Route.ErrorBoundaryProps) {
   let title = "Something went wrong";
-  let message = "An unexpected error occurred while loading this Refund Request.";
+  let message =
+    "An unexpected error occurred while loading this Refund Request.";
 
   if (isRouteErrorResponse(error)) {
     title = error.status === 403 ? "Access denied" : `Error ${error.status}`;

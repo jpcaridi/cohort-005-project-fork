@@ -54,7 +54,10 @@ import {
 import { parseFormData } from "~/lib/validation";
 import { MAX_RATING, MIN_RATING } from "~/lib/ratings";
 import { getCourseRatingSummary } from "~/lib/ratings.server";
-import { canRaiseRefundRequest } from "~/lib/refund-requests.server";
+import {
+  canRaiseRefundRequest,
+  REFUND_WINDOW_DAYS,
+} from "~/lib/refund-requests.server";
 import { StarRating, StarRatingInput } from "~/components/star-rating";
 
 function getCourseBySlug(slug: string) {
@@ -339,7 +342,6 @@ function rateCourse(userId: number, courseId: number, rating: number) {
     .get();
 }
 
-const REFUND_WINDOW_DAYS = 14;
 const REFUND_WATCH_LIMIT_SECONDS = 2 * 60 * 60;
 const REFUND_COMPLETION_LIMIT = 0.5;
 

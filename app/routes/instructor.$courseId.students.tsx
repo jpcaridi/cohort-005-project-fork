@@ -34,7 +34,6 @@ function getCourseById(id: number) {
 function getCourseEnrolledStudents(courseId: number) {
   return db
     .select({
-      enrollmentId: enrollments.id,
       userId: enrollments.userId,
       enrolledAt: enrollments.enrolledAt,
       completedAt: enrollments.completedAt,
@@ -46,7 +45,7 @@ function getCourseEnrolledStudents(courseId: number) {
 
 // Learners whose Refund Request was approved lose their enrollment, but stay
 // on the roster — marked as refunded — so the Instructor can see what they did.
-function getRefundedStudents(courseId: number, enrolledUserIds: Set<number>) {
+function getRefundedLearners(courseId: number, enrolledUserIds: Set<number>) {
   const rows = db
     .select({
       userId: purchases.userId,
@@ -213,14 +212,15 @@ export async function loader({ params, request }: Route.LoaderArgs) {
     });
   }
 
-  // Get all enrolled students, then the refunded ones
+  // Enrolled learners, then refunded learners (who no longer have an
+  // enrollment, so their enrolledAt is the purchase date and completedAt is
+  // unknown)
   const enrolledStudents = getCourseEnrolledStudents(courseId).map(
     (enrollment) => ({ ...enrollment, refundedAt: null as string | null })
   );
   const enrolledUserIds = new Set(enrolledStudents.map((e) => e.userId));
-  for (const refunded of getRefundedStudents(courseId, enrolledUserIds)) {
+  for (const refunded of getRefundedLearners(courseId, enrolledUserIds)) {
     enrolledStudents.push({
-      enrollmentId: -refunded.userId,
       userId: refunded.userId,
       enrolledAt: refunded.enrolledAt,
       completedAt: null,

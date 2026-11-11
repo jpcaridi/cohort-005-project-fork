@@ -1,6 +1,6 @@
-import { data, isRouteErrorResponse, Link } from "react-router";
+import { isRouteErrorResponse, Link } from "react-router";
 import type { Route } from "./+types/refund-requests";
-import { getCurrentUserId } from "~/lib/session";
+import { requireUserId } from "~/lib/access.server";
 import { listRefundRequests } from "~/lib/refund-requests.server";
 import { Card, CardContent } from "~/components/ui/card";
 import { Button } from "~/components/ui/button";
@@ -17,10 +17,7 @@ export function meta() {
 }
 
 export async function loader({ request }: Route.LoaderArgs) {
-  const currentUserId = await getCurrentUserId(request);
-  if (!currentUserId) {
-    throw data("Select a user from the DevUI panel.", { status: 401 });
-  }
+  const currentUserId = await requireUserId(request);
 
   const viewer = db
     .select({ role: users.role })

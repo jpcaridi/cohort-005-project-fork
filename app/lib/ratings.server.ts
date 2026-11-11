@@ -7,7 +7,7 @@ export type CourseRatingSummary = {
   count: number;
 };
 
-export const EMPTY_RATING_SUMMARY: CourseRatingSummary = {
+const EMPTY_RATING_SUMMARY: CourseRatingSummary = {
   average: null,
   count: 0,
 };
@@ -22,7 +22,7 @@ export const countedRatingEnrollment = and(
   eq(enrollments.courseId, courseRatings.courseId)
 );
 
-export function roundAverage(average: number) {
+function roundAverage(average: number) {
   return Math.round(average * 10) / 10;
 }
 
