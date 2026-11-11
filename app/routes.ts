@@ -40,6 +40,9 @@ export default [
       "instructor/:courseId/students",
       "routes/instructor.$courseId.students.tsx"
     ),
+    route("refund-requests", "routes/refund-requests.tsx"),
+    route("refund-requests/new", "routes/refund-requests.new.tsx"),
+    route("refund-requests/:refundRequestId", "routes/refund-requests.$refundRequestId.tsx"),
     route("admin/users", "routes/admin.users.tsx"),
     route("admin/courses", "routes/admin.courses.tsx"),
     route("admin/categories", "routes/admin.categories.tsx"),

@@ -76,3 +76,18 @@ export async function parseJsonBody<T extends z.ZodType>(
 
   return { success: false, errors };
 }
+
+/**
+ * The message from a thrown `data("...", { status: 400 })`, or null for any
+ * other error. Lets an action show a rule's refusal next to its form rather
+ * than on the error page.
+ */
+export function badRequestMessage(error: unknown): string | null {
+  if (typeof error !== "object" || error === null) return null;
+  const { init, data: message } = error as {
+    init?: { status?: number };
+    data?: unknown;
+  };
+  if (init?.status === 400 && typeof message === "string") return message;
+  return null;
+}

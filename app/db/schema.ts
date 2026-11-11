@@ -31,10 +31,19 @@ export enum QuestionType {
   TrueFalse = "true_false",
 }
 
-export enum RefundStatus {
+// The Admin's decision on a Refund Request.
+export enum RefundRequestStatus {
   Open = "open",
   Approved = "approved",
   Declined = "declined",
+}
+
+// What has happened to the money once a Refund Request is approved. Kept apart
+// from the decision — see docs/adr/0001-refund-requests-and-refunds-are-separate.md.
+export enum RefundStatus {
+  Pending = "pending",
+  Issued = "issued",
+  Failed = "failed",
 }
 
 export enum TeamMemberRole {
@@ -229,7 +238,9 @@ export const purchases = sqliteTable(
   (table) => [index("purchases_course_idx").on(table.courseId)]
 );
 
-export const refunds = sqliteTable(
+// A Refund Request and, once it is approved, its Refund. The table keeps its
+// original name; the decision and the money have separate status columns.
+export const refundRequests = sqliteTable(
   "refunds",
   {
     id: integer("id").primaryKey({ autoIncrement: true }),
@@ -238,17 +249,24 @@ export const refunds = sqliteTable(
       .references(() => purchases.id),
     status: text("status")
       .notNull()
-      .$type<RefundStatus>()
-      .default(RefundStatus.Open),
-    // The learner's own words, in the box on the course page.
+      .$type<RefundRequestStatus>()
+      .default(RefundRequestStatus.Open),
+    // The learner's own words — typed in by the Admin when they raise it.
     reason: text("reason").notNull(),
-    // Null until someone approves — a declined request refunds nothing.
-    amountRefunded: integer("amount_refunded"),
+    // Null when the learner raised it; the Admin's id when an Admin did.
+    raisedByUserId: integer("raised_by_user_id").references(() => users.id),
     requestedAt: text("requested_at")
       .notNull()
       .$defaultFn(() => new Date().toISOString()),
     resolvedAt: text("resolved_at"),
     resolvedByUserId: integer("resolved_by_user_id").references(() => users.id),
+    // Why it was declined, or why a Partial Refund is less than was paid.
+    decisionReason: text("decision_reason"),
+    // Everything below is the Refund, and stays null unless approved.
+    amountRefunded: integer("amount_refunded"),
+    refundStatus: text("refund_status").$type<RefundStatus>(),
+    refundFailureReason: text("refund_failure_reason"),
+    refundUpdatedAt: text("refund_updated_at"),
   },
   (table) => [index("refunds_purchase_idx").on(table.purchaseId)]
 );
