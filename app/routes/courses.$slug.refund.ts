@@ -9,16 +9,19 @@ import {
   lessons,
   modules,
   purchases,
-  refunds,
+  refundRequests,
   users,
   videoWatchEvents,
-  RefundStatus,
+  RefundRequestStatus,
 } from "~/db/schema";
 import { and, eq, inArray, isNotNull, sql } from "drizzle-orm";
 import { parseFormData, parseParams } from "~/lib/validation";
 import { formatPrice } from "~/lib/utils";
+import {
+  canRaiseRefundRequest,
+  REFUND_WINDOW_DAYS,
+} from "~/lib/refund-requests.server";
 
-const REFUND_WINDOW_DAYS = 14;
 const MAX_WATCHED_HOURS = 2;
 
 const refundParamsSchema = z.object({
@@ -55,19 +58,6 @@ function getLessonIdsForCourse(courseId: number): number[] {
     .all();
 
   return rows.map((row) => row.id);
-}
-
-function getOpenRefundRequest(purchaseId: number) {
-  return db
-    .select()
-    .from(refunds)
-    .where(
-      and(
-        eq(refunds.purchaseId, purchaseId),
-        eq(refunds.status, RefundStatus.Open)
-      )
-    )
-    .get();
 }
 
 // The fourteen-day window is counted in whole days, not hours — someone who
@@ -140,10 +130,11 @@ export async function action({ params, request }: Route.ActionArgs) {
     throw data("You have not bought this course.", { status: 403 });
   }
 
-  if (getOpenRefundRequest(purchase.id)) {
-    throw data("You already have an open refund request on this purchase.", {
-      status: 409,
-    });
+  if (!canRaiseRefundRequest(purchase.id)) {
+    throw data(
+      "This purchase already has an open or approved refund request.",
+      { status: 409 }
+    );
   }
 
   // A seat that came out of a team licence, and has been claimed, belongs to
@@ -207,10 +198,10 @@ export async function action({ params, request }: Route.ActionArgs) {
   }
 
   db
-    .insert(refunds)
+    .insert(refundRequests)
     .values({
       purchaseId: purchase.id,
-      status: RefundStatus.Open,
+      status: RefundRequestStatus.Open,
       reason: parsed.data.reason,
     })
     .returning()

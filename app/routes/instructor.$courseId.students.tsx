@@ -17,6 +17,9 @@ import {
   quizAttempts,
   lessonProgress,
   LessonProgressStatus,
+  purchases,
+  refundRequests,
+  RefundRequestStatus,
 } from "~/db/schema";
 import { eq, and, or, sql, desc } from "drizzle-orm";
 
@@ -31,7 +34,6 @@ function getCourseById(id: number) {
 function getCourseEnrolledStudents(courseId: number) {
   return db
     .select({
-      enrollmentId: enrollments.id,
       userId: enrollments.userId,
       enrolledAt: enrollments.enrolledAt,
       completedAt: enrollments.completedAt,
@@ -39,6 +41,34 @@ function getCourseEnrolledStudents(courseId: number) {
     .from(enrollments)
     .where(eq(enrollments.courseId, courseId))
     .all();
+}
+
+// Learners whose Refund Request was approved lose their enrollment, but stay
+// on the roster — marked as refunded — so the Instructor can see what they did.
+function getRefundedLearners(courseId: number, enrolledUserIds: Set<number>) {
+  const rows = db
+    .select({
+      userId: purchases.userId,
+      enrolledAt: purchases.createdAt,
+      refundedAt: refundRequests.resolvedAt,
+    })
+    .from(refundRequests)
+    .innerJoin(purchases, eq(refundRequests.purchaseId, purchases.id))
+    .where(
+      and(
+        eq(purchases.courseId, courseId),
+        eq(refundRequests.status, RefundRequestStatus.Approved)
+      )
+    )
+    .orderBy(desc(refundRequests.resolvedAt))
+    .all();
+
+  const seen = new Set<number>();
+  return rows.filter((row) => {
+    if (enrolledUserIds.has(row.userId) || seen.has(row.userId)) return false;
+    seen.add(row.userId);
+    return true;
+  });
 }
 
 function getQuizByLessonId(lessonId: number) {
@@ -182,8 +212,21 @@ export async function loader({ params, request }: Route.LoaderArgs) {
     });
   }
 
-  // Get all enrolled students
-  const enrolledStudents = getCourseEnrolledStudents(courseId);
+  // Enrolled learners, then refunded learners (who no longer have an
+  // enrollment, so their enrolledAt is the purchase date and completedAt is
+  // unknown)
+  const enrolledStudents = getCourseEnrolledStudents(courseId).map(
+    (enrollment) => ({ ...enrollment, refundedAt: null as string | null })
+  );
+  const enrolledUserIds = new Set(enrolledStudents.map((e) => e.userId));
+  for (const refunded of getRefundedLearners(courseId, enrolledUserIds)) {
+    enrolledStudents.push({
+      userId: refunded.userId,
+      enrolledAt: refunded.enrolledAt,
+      completedAt: null,
+      refundedAt: refunded.refundedAt,
+    });
+  }
 
   // Get all lessons with quizzes for this course
   const courseModules = db
@@ -245,6 +288,7 @@ export async function loader({ params, request }: Route.LoaderArgs) {
       email: studentUser?.email ?? "",
       enrolledAt: enrollment.enrolledAt,
       completedAt: enrollment.completedAt,
+      refundedAt: enrollment.refundedAt,
       progress,
       quizScores,
     };
@@ -392,6 +436,11 @@ export default function InstructorStudentRoster({
                           <div>
                             <p className="text-sm font-medium">
                               {student.name}
+                              {student.refundedAt && (
+                                <span className="ml-2 inline-flex items-center rounded-full bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground">
+                                  Refunded
+                                </span>
+                              )}
                             </p>
                             <p className="text-xs text-muted-foreground">
                               {student.email}

@@ -36,6 +36,7 @@ import {
   quizzes,
   users,
 } from "~/db/schema";
+import { countedRatingEnrollment } from "~/lib/ratings.server";
 import { splitRevenue, type AnalyticsRange } from "~/lib/analytics";
 import { getDiscountForCountry } from "~/lib/ppp";
 import {
@@ -392,6 +393,7 @@ function getRatingSummary(
     })
     .from(courseRatings)
     .innerJoin(courses, eq(courseRatings.courseId, courses.id))
+    .innerJoin(enrollments, countedRatingEnrollment)
     .where(scopeOn(courseRatings.createdAt, instructorId, range))
     .get();
 
