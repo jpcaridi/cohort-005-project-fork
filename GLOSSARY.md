@@ -52,6 +52,10 @@ _Avoid_: Team purchase, Bulk purchase
 One place on a Team Licence that a Student can claim to get an Enrollment.
 _Avoid_: Coupon, Code, Voucher
 
+**Purchasing-Power Price**:
+A lower price for a course, set by the country the buyer is in when they buy. A Purchase made at one can only be taken in that country.
+_Avoid_: PPP, Regional price, Discount
+
 **Unclaimed Seat**:
 A Seat no Student has claimed yet.
 
