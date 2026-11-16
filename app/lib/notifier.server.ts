@@ -70,10 +70,44 @@ export type DiscussionQuestionNotification = {
   };
 };
 
+/** A Student claimed a Seat on the recipient's Team Licence. Catalogue #4. */
+export type SeatClaimedNotification = {
+  kind: "seat_claimed";
+  recipients: Person[];
+  actor: Person;
+  /** One per domain event, so a retry can't send the Notification twice. */
+  idempotencyKey: string;
+  data: {
+    seatId: number;
+    courseTitle: string;
+    /** Seats on the Team Licence that can still be claimed, after this one. */
+    seatsLeft: number;
+    /** Where clicking the Notification goes. */
+    url: string;
+  };
+};
+
+/** A Student enrolled on a course the recipient teaches. Catalogue #5. */
+export type EnrollmentNotification = {
+  kind: "enrollment";
+  recipients: Person[];
+  actor: Person;
+  /** One per domain event, so a retry can't send the Notification twice. */
+  idempotencyKey: string;
+  data: {
+    enrollmentId: number;
+    courseTitle: string;
+    /** Where clicking the Notification goes. */
+    url: string;
+  };
+};
+
 /** Every Notification Cadence sends. Later kinds join this union. */
 export type Notification =
   | DiscussionReplyNotification
-  | DiscussionQuestionNotification;
+  | DiscussionQuestionNotification
+  | SeatClaimedNotification
+  | EnrollmentNotification;
 
 export type NotificationKind = Notification["kind"];
 
@@ -83,6 +117,8 @@ export const NOTIFICATION_CATEGORY: Record<
 > = {
   discussion_reply: "discussion_replies",
   discussion_question: "discussion_questions",
+  seat_claimed: "seat_claims",
+  enrollment: "enrollments",
 };
 
 export interface Notifier {

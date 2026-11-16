@@ -20,6 +20,8 @@ import type {
 const WORKFLOW_KEY: Record<NotificationKind, string> = {
   discussion_reply: "discussion-reply",
   discussion_question: "discussion-question",
+  seat_claimed: "seat-claimed",
+  enrollment: "enrollment",
 };
 
 export function knockUserId(cadenceUserId: number): string {
