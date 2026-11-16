@@ -1,17 +1,15 @@
-import { Link, useFetcher, redirect } from "react-router";
-import { useEffect } from "react";
-import { toast } from "sonner";
+import { Link, useFetcher, redirect, isRouteErrorResponse } from "react-router";
 import { z } from "zod";
 import type { Route } from "./+types/redeem.$code";
 import { getCurrentUserId } from "~/lib/session";
 import { resolveCountry } from "~/lib/country.server";
 import { parseParams, parseFormData } from "~/lib/validation";
-import { getSeatAvailability } from "~/lib/refunds.server";
+import { findSeatByCode, getSeatAvailability } from "~/lib/seats.server";
 import { findEnrollment } from "~/lib/enrollments.server";
 import { getNotifier } from "~/lib/notifier.server";
 import {
   claimSeat,
-  findSeatByCode,
+  SeatClaimRefused,
   SEAT_ON_HOLD,
   SEAT_REFUNDED,
 } from "~/lib/seat-claims.server";
@@ -36,10 +34,10 @@ const redeemActionSchema = z.object({
 });
 
 export function meta({ loaderData }: Route.MetaArgs) {
-  const title = loaderData?.course?.title ?? "Redeem Coupon";
+  const title = loaderData?.course?.title ?? "Claim a Seat";
   return [
     { title: `Redeem: ${title} — Cadence` },
-    { name: "description", content: `Redeem your coupon for ${title}` },
+    { name: "description", content: `Claim your Seat on ${title}` },
   ];
 }
 
@@ -48,7 +46,7 @@ export async function loader({ params, request }: Route.LoaderArgs) {
 
   const coupon = findSeatByCode(db, code);
   if (!coupon) {
-    throw data("Coupon not found.", { status: 404 });
+    throw data("Seat not found.", { status: 404 });
   }
 
   const currentUserId = await getCurrentUserId(request);
@@ -117,26 +115,27 @@ export async function action({ params, request }: Route.ActionArgs) {
   }
 
   const userCountry = await resolveCountry(request);
-  const result = await claimSeat(
-    db,
-    await getNotifier(),
-    code,
-    currentUserId,
-    userCountry ?? "",
-    new Date()
-  );
-
-  if (!result.ok) {
-    return data({ error: result.error }, { status: 400 });
+  let claim;
+  try {
+    claim = await claimSeat(
+      db,
+      await getNotifier(),
+      code,
+      currentUserId,
+      userCountry ?? "",
+      new Date()
+    );
+  } catch (error) {
+    if (error instanceof SeatClaimRefused) {
+      throw data(error.message, { status: 409 });
+    }
+    throw error;
   }
 
-  throw redirect(`/courses/${result.course.slug}/welcome`);
+  throw redirect(`/courses/${claim.course.slug}/welcome`);
 }
 
-export default function Redeem({
-  loaderData,
-  actionData,
-}: Route.ComponentProps) {
+export default function Redeem({ loaderData }: Route.ComponentProps) {
   const {
     course,
     code,
@@ -148,21 +147,13 @@ export default function Redeem({
   const fetcher = useFetcher();
   const isSubmitting = fetcher.state !== "idle";
 
-  useEffect(() => {
-    const error =
-      fetcher.data?.error ?? (actionData as { error?: string })?.error;
-    if (error) {
-      toast.error(error);
-    }
-  }, [fetcher.data, actionData]);
-
   // Determine which state to show
   const canRedeem =
     !alreadyRedeemed && !alreadyEnrolled && !countryMismatch && !unavailableReason;
 
   return (
     <div className="mx-auto max-w-2xl p-6 lg:p-8">
-      <h1 className="mb-2 text-2xl font-bold">Redeem Coupon</h1>
+      <h1 className="mb-2 text-2xl font-bold">Claim a Seat</h1>
       <p className="mb-8 text-muted-foreground">
         You&apos;ve been invited to enroll in a course.
       </p>
@@ -175,7 +166,7 @@ export default function Redeem({
 
           <h2 className="mb-2 text-xl font-semibold">{course.title}</h2>
           <p className="mb-6 text-sm text-muted-foreground">
-            Coupon code:{" "}
+            Seat:{" "}
             <code className="rounded bg-muted px-2 py-0.5">{code}</code>
           </p>
 
@@ -184,12 +175,12 @@ export default function Redeem({
               <div className="flex items-center justify-center gap-2 text-destructive">
                 <AlertCircle className="size-5" />
                 <span className="font-medium">
-                  This coupon has already been used
+                  This Seat has already been claimed
                 </span>
               </div>
               <p className="mt-2 text-sm text-muted-foreground">
                 Someone has already claimed this seat. Please ask the person who
-                shared this link for a new coupon.
+                shared this link for another Seat.
               </p>
             </div>
           ) : alreadyEnrolled ? (
@@ -201,8 +192,8 @@ export default function Redeem({
                 </span>
               </div>
               <p className="mt-2 text-sm text-muted-foreground">
-                You already have access to this course. The coupon has not been
-                used, so it can still be shared with someone else.
+                You already have access to this course. The Seat hasn&apos;t been
+                claimed, so it can still be shared with someone else.
               </p>
               <Link to={`/courses/${course.slug}`}>
                 <Button className="mt-4" size="lg">
@@ -227,9 +218,8 @@ export default function Redeem({
                 <span className="font-medium">Region restriction</span>
               </div>
               <p className="mt-2 text-sm text-muted-foreground">
-                This coupon can only be redeemed from the same country as the
-                person who purchased it. Your location doesn&apos;t match the
-                purchaser&apos;s country.
+                This Seat can only be claimed from the country its Team
+                Licence was bought in. Your location doesn&apos;t match.
               </p>
             </div>
           ) : (
@@ -253,6 +243,32 @@ export default function Redeem({
               View course details
             </Link>
           </div>
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
+// A claim refused when it is made (someone claimed the Seat first, or it went
+// on hold) lands here; the loader shows every refusal it can foresee.
+export function ErrorBoundary({ error }: Route.ErrorBoundaryProps) {
+  const message =
+    isRouteErrorResponse(error) && typeof error.data === "string"
+      ? error.data
+      : "Something went wrong claiming this Seat.";
+
+  return (
+    <div className="mx-auto max-w-2xl p-6 lg:p-8">
+      <Card>
+        <CardContent className="p-8 text-center">
+          <AlertCircle className="mx-auto mb-4 size-12 text-destructive" />
+          <h1 className="mb-2 text-xl font-semibold">
+            This Seat can&apos;t be claimed
+          </h1>
+          <p className="mb-6 text-muted-foreground">{message}</p>
+          <Link to="/">
+            <Button>Go Home</Button>
+          </Link>
         </CardContent>
       </Card>
     </div>

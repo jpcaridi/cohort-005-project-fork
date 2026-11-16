@@ -1,51 +1,57 @@
 import { and, eq, isNull } from "drizzle-orm";
-import { coupons, courses, purchases, users } from "~/db/schema";
+import type { Db } from "~/db";
+import { coupons, courses, purchases } from "~/db/schema";
 import {
-  enrollUser,
   findEnrollment,
-  getPeople,
+  notifyEnrollment,
+  saveEnrollment,
   type Enrollment,
 } from "~/lib/enrollments.server";
 import { notifySafely, type Notifier } from "~/lib/notifier.server";
-import { getSeatAvailability, type Db } from "~/lib/refunds.server";
+import { getPeople } from "~/lib/people.server";
+import {
+  findSeatByCode,
+  getSeatAvailability,
+  teamLicenceOwnerId,
+  type Seat,
+} from "~/lib/seats.server";
 
 // ─── Seat claims ───
 // A Student claiming a Seat on a Team Licence, which gives them an Enrollment.
 // Takes the database first, the Notifier next and `now` last, like the
 // comments service.
 
-type Seat = typeof coupons.$inferSelect;
-type Purchase = typeof purchases.$inferSelect;
-
 export const SEAT_ON_HOLD =
   "This seat can't be claimed right now. Ask the person who shared it with you.";
 export const SEAT_REFUNDED =
   "This seat is no longer available. Ask the person who shared it with you.";
 
+/** A claim the Student can't make, with a message they can read. */
+export class SeatClaimRefused extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "SeatClaimRefused";
+  }
+}
+
 export type SeatClaim = {
-  ok: true;
   seat: Seat;
-  teamLicence: Purchase;
-  /** The Team Admin who bought the Team Licence. */
-  teamAdmin: { id: number; name: string; email: string };
   course: { id: number; title: string; slug: string };
   /** Seats on the Team Licence that can still be claimed, after this one. */
   seatsLeft: number;
   enrollment: Enrollment;
 };
 
-export type ClaimResult = SeatClaim | { ok: false; error: string };
-
-export function findSeatByCode(db: Db, code: string) {
-  return db.select().from(coupons).where(eq(coupons.code, code)).get();
-}
-
 /**
- * Claims the Seat with this code for the Student and enrolls them. A Seat can
- * only be claimed from the country the Team Licence was bought in. Once the
- * claim is saved, the Team Admin gets a Seat-claim Notification (unless they
- * claimed it themselves) and the Instructor an Enrollment Notification
- * (best-effort: a failure is logged, not thrown).
+ * Claims the Seat with this code for the Student and enrolls them, in one
+ * transaction: the Seat is claimed only if the Enrollment is saved. A Seat can
+ * only be claimed from the country the Team Licence was bought in. Throws
+ * `SeatClaimRefused` for a claim the Student can't make.
+ *
+ * Once the claim has committed, the Team Admin who owns the Team Licence gets
+ * a Seat-claim Notification (unless they claimed it themselves) and the
+ * Instructor an Enrollment Notification (best-effort: a failure is logged, not
+ * thrown).
  */
 export async function claimSeat(
   db: Db,
@@ -54,112 +60,117 @@ export async function claimSeat(
   userId: number,
   userCountry: string,
   now: Date
-): Promise<ClaimResult> {
-  const seat = findSeatByCode(db, code);
-  if (!seat) {
-    return { ok: false, error: "Coupon not found" };
-  }
-
-  if (seat.redeemedByUserId !== null) {
-    return { ok: false, error: "Coupon has already been redeemed" };
-  }
-
-  const availability = getSeatAvailability(db, seat);
-  if (availability === "on_hold") {
-    return { ok: false, error: SEAT_ON_HOLD };
-  }
-  if (availability === "refunded") {
-    return { ok: false, error: SEAT_REFUNDED };
-  }
-
-  if (findEnrollment(db, userId, seat.courseId)) {
-    return { ok: false, error: "You are already enrolled in this course" };
-  }
-
-  const teamLicence = db
-    .select()
-    .from(purchases)
-    .where(eq(purchases.id, seat.purchaseId))
-    .get();
-  const teamAdmin = teamLicence
-    ? db
-        .select({ id: users.id, name: users.name, email: users.email })
-        .from(users)
-        .where(eq(users.id, teamLicence.userId))
-        .get()
-    : undefined;
-  const course = db
-    .select({ id: courses.id, title: courses.title, slug: courses.slug })
-    .from(courses)
-    .where(eq(courses.id, seat.courseId))
-    .get();
-
-  if (!teamLicence || !teamAdmin || !course) {
-    return { ok: false, error: "Coupon not found" };
-  }
-
-  if (teamLicence.country && teamLicence.country !== userCountry) {
-    return {
-      ok: false,
-      error:
-        "This coupon can only be redeemed from the same country as the purchaser",
-    };
-  }
-
-  const claimedSeat = db
-    .update(coupons)
-    .set({ redeemedByUserId: userId, redeemedAt: now.toISOString() })
-    .where(eq(coupons.id, seat.id))
-    .returning()
-    .get();
-
-  const enrollment = await enrollUser(
-    db,
-    notifier,
-    userId,
-    seat.courseId,
-    now
-  );
-
-  const seatsLeft = db
-    .select({ id: coupons.id })
-    .from(coupons)
-    .where(
-      and(
-        eq(coupons.purchaseId, teamLicence.id),
-        isNull(coupons.redeemedAt),
-        isNull(coupons.refundedAt)
-      )
-    )
-    .all().length;
-
-  if (teamAdmin.id !== userId) {
-    const people = getPeople(db, [teamAdmin.id, userId]);
-    const recipient = people.get(teamAdmin.id);
-    const student = people.get(userId);
-    if (recipient && student) {
-      await notifySafely(notifier, {
-        kind: "seat_claimed",
-        recipients: [recipient],
-        actor: student,
-        idempotencyKey: `seat-claimed:${claimedSeat.id}`,
-        data: {
-          seatId: claimedSeat.id,
-          courseTitle: course.title,
-          seatsLeft,
-          url: "/team",
-        },
-      });
+): Promise<SeatClaim> {
+  const claim = db.transaction((tx) => {
+    const seat = findSeatByCode(tx, code);
+    if (!seat) {
+      throw new SeatClaimRefused("Seat not found");
     }
-  }
+
+    const availability = getSeatAvailability(tx, seat);
+    if (availability === "claimed") {
+      throw new SeatClaimRefused("This Seat has already been claimed");
+    }
+    if (availability === "on_hold") {
+      throw new SeatClaimRefused(SEAT_ON_HOLD);
+    }
+    if (availability === "refunded") {
+      throw new SeatClaimRefused(SEAT_REFUNDED);
+    }
+
+    if (findEnrollment(tx, userId, seat.courseId)) {
+      throw new SeatClaimRefused("You are already enrolled in this course");
+    }
+
+    // Foreign keys guarantee the Team Licence exists; a missing one is a bug,
+    // not a claim the Student can't make.
+    const teamLicence = tx
+      .select({ country: purchases.country })
+      .from(purchases)
+      .where(eq(purchases.id, seat.purchaseId))
+      .get();
+    if (!teamLicence) {
+      throw new Error(`Seat ${seat.id} has no Team Licence`);
+    }
+    if (teamLicence.country && teamLicence.country !== userCountry) {
+      throw new SeatClaimRefused(
+        "This Seat can only be claimed from the country its Team Licence was bought in"
+      );
+    }
+
+    const claimedSeat = tx
+      .update(coupons)
+      .set({ redeemedByUserId: userId, redeemedAt: now.toISOString() })
+      .where(eq(coupons.id, seat.id))
+      .returning()
+      .get();
+
+    const saved = saveEnrollment(tx, userId, seat.courseId, now);
+
+    const course = tx
+      .select({ id: courses.id, title: courses.title, slug: courses.slug })
+      .from(courses)
+      .where(eq(courses.id, seat.courseId))
+      .get();
+    if (!course) {
+      throw new Error(`Seat ${seat.id} has no course`);
+    }
+
+    const seatsLeft = tx
+      .select({ id: coupons.id })
+      .from(coupons)
+      .where(
+        and(
+          eq(coupons.purchaseId, seat.purchaseId),
+          isNull(coupons.redeemedAt),
+          isNull(coupons.refundedAt)
+        )
+      )
+      .all().length;
+
+    return { seat: claimedSeat, course, seatsLeft, saved };
+  });
+
+  await notifyEnrollment(db, notifier, claim.saved);
+  await notifySeatClaimed(db, notifier, claim.seat, claim.course.title, claim.seatsLeft);
 
   return {
-    ok: true,
-    seat: claimedSeat,
-    teamLicence,
-    teamAdmin,
-    course,
-    seatsLeft,
-    enrollment,
+    seat: claim.seat,
+    course: claim.course,
+    seatsLeft: claim.seatsLeft,
+    enrollment: claim.saved.enrollment,
   };
+}
+
+/** Tells the Team Admin who owns the Team Licence, unless they claimed it. */
+async function notifySeatClaimed(
+  db: Db,
+  notifier: Notifier,
+  seat: Seat,
+  courseTitle: string,
+  seatsLeft: number
+) {
+  const ownerId = teamLicenceOwnerId(db, seat.purchaseId);
+  const studentId = seat.redeemedByUserId;
+  if (ownerId === undefined || studentId === null || ownerId === studentId) {
+    return;
+  }
+
+  const people = getPeople(db, [ownerId, studentId]);
+  const recipient = people.get(ownerId);
+  const student = people.get(studentId);
+  if (!recipient || !student) return;
+
+  await notifySafely(notifier, {
+    kind: "seat_claimed",
+    recipients: [recipient],
+    actor: student,
+    idempotencyKey: `seat-claimed:${seat.id}`,
+    data: {
+      seatId: seat.id,
+      courseTitle,
+      seatsLeft,
+      url: "/team",
+    },
+  });
 }

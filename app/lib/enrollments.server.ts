@@ -1,7 +1,8 @@
-import { and, eq, inArray } from "drizzle-orm";
-import { courses, enrollments, users } from "~/db/schema";
-import { notifySafely, type Notifier, type Person } from "~/lib/notifier.server";
-import type { Db } from "~/lib/refunds.server";
+import { and, eq } from "drizzle-orm";
+import type { Db, Queryable } from "~/db";
+import { courses, enrollments } from "~/db/schema";
+import { notifySafely, type Notifier } from "~/lib/notifier.server";
+import { getPeople } from "~/lib/people.server";
 
 // ─── Enrollments ───
 // Giving a Student an Enrollment on a course, whether it came from an
@@ -11,7 +12,13 @@ import type { Db } from "~/lib/refunds.server";
 
 export type Enrollment = typeof enrollments.$inferSelect;
 
-export function findEnrollment(db: Db, userId: number, courseId: number) {
+/** A saved Enrollment and the course it is on. */
+export type NewEnrollment = {
+  enrollment: Enrollment;
+  course: { id: number; title: string; instructorId: number };
+};
+
+export function findEnrollment(db: Queryable, userId: number, courseId: number) {
   return db
     .select()
     .from(enrollments)
@@ -21,34 +28,18 @@ export function findEnrollment(db: Db, userId: number, courseId: number) {
     .get();
 }
 
-export function getPeople(db: Db, ids: number[]): Map<number, Person> {
-  const rows = db
-    .select({
-      id: users.id,
-      name: users.name,
-      email: users.email,
-      avatarUrl: users.avatarUrl,
-    })
-    .from(users)
-    .where(inArray(users.id, ids))
-    .all();
-  return new Map(rows.map((row) => [row.id, row]));
-}
-
 /**
- * Enrolls the Student on the course. Throws if they already have an
- * Enrollment on it, or the course doesn't exist. Once the Enrollment is saved,
- * an Enrollment Notification goes to the course's Instructor, unless they
- * enrolled themselves (best-effort: a failure is logged, not thrown). Whether
- * it reaches their Feed is their Enrollments preference, off by default.
+ * Saves the Student's Enrollment on the course, sending nothing. Throws if they
+ * already have an Enrollment on it, or the course doesn't exist. Synchronous,
+ * so it can run inside a caller's transaction; send the Notification with
+ * `notifyEnrollment` once that transaction has committed.
  */
-export async function enrollUser(
-  db: Db,
-  notifier: Notifier,
+export function saveEnrollment(
+  db: Queryable,
   userId: number,
   courseId: number,
   now: Date
-): Promise<Enrollment> {
+): NewEnrollment {
   if (findEnrollment(db, userId, courseId)) {
     throw new Error("User is already enrolled in this course");
   }
@@ -72,24 +63,51 @@ export async function enrollUser(
     .returning()
     .get();
 
-  if (course.instructorId !== userId) {
-    const people = getPeople(db, [course.instructorId, userId]);
-    const instructor = people.get(course.instructorId);
-    const student = people.get(userId);
-    if (instructor && student) {
-      await notifySafely(notifier, {
-        kind: "enrollment",
-        recipients: [instructor],
-        actor: student,
-        idempotencyKey: `enrollment:${enrollment.id}`,
-        data: {
-          enrollmentId: enrollment.id,
-          courseTitle: course.title,
-          url: `/instructor/${course.id}/students`,
-        },
-      });
-    }
-  }
+  return { enrollment, course };
+}
 
-  return enrollment;
+/**
+ * Tells the course's Instructor about a saved Enrollment, unless they enrolled
+ * themselves (best-effort: a failure is logged, not thrown). Whether it
+ * reaches their Feed is their Enrollments preference, off by default.
+ */
+export async function notifyEnrollment(
+  db: Db,
+  notifier: Notifier,
+  { enrollment, course }: NewEnrollment
+): Promise<void> {
+  if (course.instructorId === enrollment.userId) return;
+
+  const people = getPeople(db, [course.instructorId, enrollment.userId]);
+  const instructor = people.get(course.instructorId);
+  const student = people.get(enrollment.userId);
+  if (!instructor || !student) return;
+
+  await notifySafely(notifier, {
+    kind: "enrollment",
+    recipients: [instructor],
+    actor: student,
+    idempotencyKey: `enrollment:${enrollment.id}`,
+    data: {
+      enrollmentId: enrollment.id,
+      courseTitle: course.title,
+      url: `/instructor/${course.id}/students`,
+    },
+  });
+}
+
+/**
+ * Enrolls the Student on the course, then sends the Enrollment Notification
+ * (see `saveEnrollment` and `notifyEnrollment`).
+ */
+export async function enrollUser(
+  db: Db,
+  notifier: Notifier,
+  userId: number,
+  courseId: number,
+  now: Date
+): Promise<Enrollment> {
+  const saved = saveEnrollment(db, userId, courseId, now);
+  await notifyEnrollment(db, notifier, saved);
+  return saved.enrollment;
 }
