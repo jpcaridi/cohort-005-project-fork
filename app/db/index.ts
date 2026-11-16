@@ -1,6 +1,13 @@
 import Database from "better-sqlite3";
-import { drizzle } from "drizzle-orm/better-sqlite3";
+import { drizzle, type BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
 import * as schema from "./schema";
+
+/** A Cadence database. Services take one first, so tests can pass an in-memory one. */
+export type Db = BetterSQLite3Database<typeof schema>;
+/** The handle inside `db.transaction(...)`. */
+export type Tx = Parameters<Parameters<Db["transaction"]>[0]>[0];
+/** Either: for reads that run inside or outside a transaction. */
+export type Queryable = Db | Tx;
 
 // The connection is opened lazily, on first use. Opening it at module scope
 // made this module side-effectful, which meant Rollup could not drop it from

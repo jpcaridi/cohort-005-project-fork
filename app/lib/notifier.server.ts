@@ -1,4 +1,10 @@
 import { existsSync } from "node:fs";
+import {
+  entriesOf,
+  type ByCategory,
+  type NotificationCategory,
+  type NotificationChannel,
+} from "~/lib/notification-categories";
 
 // ─── Notifier ───
 // The server port for Notifications (see GLOSSARY.md). Services take a
@@ -21,134 +27,111 @@ export type Person = {
   avatarUrl: string | null;
 };
 
-/**
- * The preference categories a person can switch off. Every kind of
- * Notification belongs to exactly one.
- */
-export type NotificationCategory =
-  | "refund_request_updates"
-  | "open_refund_requests"
-  | "seat_claims"
-  | "enrollments"
-  | "discussion_questions"
-  | "discussion_replies";
+export type { NotificationCategory, NotificationChannel };
 
-/** The channels a Notification can go to. v1 has the Notification Feed only. */
-export type NotificationChannel = "feed";
+/** What every Notification has: who gets it, who caused it, and its kind. */
+type NotificationBase<Kind extends string, Actor extends Person | null, Data> = {
+  kind: Kind;
+  recipients: Person[];
+  /** Who caused it; null when Cadence sent it itself (the "C" avatar). */
+  actor: Actor;
+  /** One per domain event, so a retry can't send the Notification twice. */
+  idempotencyKey: string;
+  data: Data;
+};
+
+/** What a Discussion Question or Discussion Reply Notification carries. */
+export type DiscussionData = {
+  commentId: number;
+  courseTitle: string;
+  lessonTitle: string;
+  snippet: string;
+  /** Where clicking the Notification goes. */
+  url: string;
+};
 
 /** Someone replied to a comment the recipient wrote. Catalogue #7. */
-export type DiscussionReplyNotification = {
-  kind: "discussion_reply";
-  recipients: Person[];
-  actor: Person;
-  /** One per domain event, so a retry can't send the Notification twice. */
-  idempotencyKey: string;
-  data: {
-    commentId: number;
-    courseTitle: string;
-    lessonTitle: string;
-    snippet: string;
-    /** Where clicking the Notification goes. */
-    url: string;
-  };
-};
+export type DiscussionReplyNotification = NotificationBase<
+  "discussion_reply",
+  Person,
+  DiscussionData
+>;
 
 /** Someone asked a Discussion Question on the recipient's course. Catalogue #6. */
-export type DiscussionQuestionNotification = {
-  kind: "discussion_question";
-  recipients: Person[];
-  actor: Person;
-  /** One per domain event, so a retry can't send the Notification twice. */
-  idempotencyKey: string;
-  data: {
-    commentId: number;
-    courseTitle: string;
-    lessonTitle: string;
-    snippet: string;
-    /** Where clicking the Notification goes. */
-    url: string;
-  };
-};
+export type DiscussionQuestionNotification = NotificationBase<
+  "discussion_question",
+  Person,
+  DiscussionData
+>;
 
 /** A Student claimed a Seat on the recipient's Team Licence. Catalogue #4. */
-export type SeatClaimedNotification = {
-  kind: "seat_claimed";
-  recipients: Person[];
-  actor: Person;
-  /** One per domain event, so a retry can't send the Notification twice. */
-  idempotencyKey: string;
-  data: {
+export type SeatClaimedNotification = NotificationBase<
+  "seat_claimed",
+  Person,
+  {
     seatId: number;
     courseTitle: string;
     /** Seats on the Team Licence that can still be claimed, after this one. */
     seatsLeft: number;
     /** Where clicking the Notification goes. */
     url: string;
-  };
-};
+  }
+>;
 
 /** A Student enrolled on a course the recipient teaches. Catalogue #5. */
-export type EnrollmentNotification = {
-  kind: "enrollment";
-  recipients: Person[];
-  actor: Person;
-  /** One per domain event, so a retry can't send the Notification twice. */
-  idempotencyKey: string;
-  data: {
+export type EnrollmentNotification = NotificationBase<
+  "enrollment",
+  Person,
+  {
     enrollmentId: number;
     courseTitle: string;
     /** Where clicking the Notification goes. */
     url: string;
-  };
-};
+  }
+>;
 
 /**
  * The buyer raised a Refund Request; it is under review. Catalogue #8. Sent
  * by Cadence itself, so there is no actor (the Feed shows the Cadence "C"
  * avatar), and there is nowhere to go (`url` is null).
  */
-export type RefundRequestedNotification = {
-  kind: "refund_requested";
-  recipients: Person[];
-  actor: null;
-  idempotencyKey: string;
-  data: {
+export type RefundRequestedNotification = NotificationBase<
+  "refund_requested",
+  null,
+  {
     refundRequestId: number;
     courseTitle: string;
     /** What the buyer paid, in cents. */
     amount: number;
     url: null;
-  };
-};
+  }
+>;
 
-/** A buyer raised a Refund Request a Platform Admin must decide. Catalogue #3. */
-export type OpenRefundRequestNotification = {
-  kind: "open_refund_request";
-  recipients: Person[];
-  /** The buyer who asked. */
-  actor: Person;
-  idempotencyKey: string;
-  data: {
+/**
+ * A buyer (the actor) raised a Refund Request a Platform Admin must decide.
+ * Catalogue #3.
+ */
+export type OpenRefundRequestNotification = NotificationBase<
+  "open_refund_request",
+  Person,
+  {
     refundRequestId: number;
     courseTitle: string;
     /** What the buyer paid, in cents. */
     amount: number;
     reason: string;
     url: string;
-  };
-};
+  }
+>;
 
 /**
- * A Platform Admin approved (catalogue #1) or declined (catalogue #2) the
- * recipient's Refund Request.
+ * A Platform Admin (the actor) approved (catalogue #1) or declined (catalogue
+ * #2) the recipient's Refund Request.
  */
-export type RefundDecidedNotification = {
-  kind: "refund_approved" | "refund_declined";
-  recipients: Person[];
-  /** The Platform Admin who decided. */
-  actor: Person;
-  idempotencyKey: string;
-  data: {
+export type RefundDecidedNotification = NotificationBase<
+  "refund_approved" | "refund_declined",
+  Person,
+  {
     refundRequestId: number;
     purchaseId: number;
     courseTitle: string;
@@ -157,8 +140,8 @@ export type RefundDecidedNotification = {
     /** Always set on a decline; optional on an approval. */
     decisionNote: string | null;
     url: string;
-  };
-};
+  }
+>;
 
 /** Every Notification Cadence sends. Later kinds join this union. */
 export type Notification =
@@ -238,14 +221,14 @@ export type PreferenceChange = {
  * What a person starts with: Enrollments off, every other category on, on
  * the Feed (the only channel in v1).
  */
-export const DEFAULT_PREFERENCES = {
+export const DEFAULT_PREFERENCES: ByCategory<Record<NotificationChannel, boolean>> = {
   refund_request_updates: { feed: true },
   open_refund_requests: { feed: true },
   seat_claims: { feed: true },
   enrollments: { feed: false },
   discussion_questions: { feed: true },
   discussion_replies: { feed: true },
-} satisfies Record<NotificationCategory, Record<NotificationChannel, boolean>>;
+};
 
 /** Deep-merges `changes` into `preferences`, as Knock's merge strategy does. */
 export function mergeNotificationPreferences(
@@ -253,10 +236,7 @@ export function mergeNotificationPreferences(
   changes: NotificationPreferences
 ): NotificationPreferences {
   const merged: NotificationPreferences = { ...preferences };
-  for (const [category, channels] of Object.entries(changes) as [
-    NotificationCategory,
-    Partial<Record<NotificationChannel, boolean>>,
-  ][]) {
+  for (const [category, channels] of entriesOf(changes)) {
     merged[category] = { ...merged[category], ...channels };
   }
   return merged;

@@ -1,7 +1,6 @@
 import { and, asc, desc, eq, inArray, isNotNull, isNull, sql } from "drizzle-orm";
-import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
 import { alias } from "drizzle-orm/sqlite-core";
-import * as schema from "~/db/schema";
+import type { Db, Queryable } from "~/db";
 import {
   coupons,
   courses,
@@ -21,8 +20,9 @@ import { formatPrice } from "~/lib/utils";
 import {
   notifySafely,
   type Notifier,
-  type Person,
 } from "~/lib/notifier.server";
+import { toPerson } from "~/lib/people.server";
+import { isClaimed, type Seat } from "~/lib/seats.server";
 import {
   REFUND_COMPLETION_LIMIT,
   REFUND_WATCH_LIMIT_SECONDS,
@@ -43,12 +43,7 @@ import {
 // has committed: a Notifier failure is logged and never fails the action. The
 // email is still returned for the route to send, as before.
 
-export type Db = BetterSQLite3Database<typeof schema>;
-type Tx = Parameters<Parameters<Db["transaction"]>[0]>[0];
-type Queryable = Db | Tx;
-
 type Purchase = typeof purchases.$inferSelect;
-type Seat = typeof coupons.$inferSelect;
 
 // ─── Calendar days ───
 
@@ -88,10 +83,6 @@ function getSeats(db: Queryable, purchaseId: number): Seat[] {
     .all();
 }
 
-function isClaimed(seat: Seat) {
-  return seat.redeemedAt !== null;
-}
-
 // There is no column saying which kind a Purchase is: a Team Licence is the
 // Purchase that granted Seats, and every Team Licence grants at least one.
 export type PurchaseKind = "individual_purchase" | "team_licence";
@@ -110,25 +101,6 @@ function getRefundRequestWithStatus(
     .from(refunds)
     .where(and(eq(refunds.purchaseId, purchaseId), eq(refunds.status, status)))
     .get();
-}
-
-export type SeatAvailability = "available" | "claimed" | "on_hold" | "refunded";
-
-/**
- * Whether a Seat can be claimed right now. A Team Licence's Unclaimed Seats are
- * on hold while it has an Open Refund Request, and can never be claimed once
- * that request is approved.
- */
-export function getSeatAvailability(
-  db: Queryable,
-  seat: Seat
-): SeatAvailability {
-  if (isClaimed(seat)) return "claimed";
-  if (seat.refundedAt !== null) return "refunded";
-  if (getRefundRequestWithStatus(db, seat.purchaseId, RefundStatus.Open)) {
-    return "on_hold";
-  }
-  return "available";
 }
 
 // ─── Figures and rules ───
@@ -360,15 +332,6 @@ export function getRefundOffer(
 }
 
 export type Email = { to: string; subject: string; body: string };
-
-function toPerson(user: typeof users.$inferSelect): Person {
-  return {
-    id: user.id,
-    name: user.name,
-    email: user.email,
-    avatarUrl: user.avatarUrl,
-  };
-}
 
 export type RaiseResult =
   | { ok: true; refundRequestId: number; kind: PurchaseKind; email: Email }
@@ -634,7 +597,7 @@ export function listTeamLicences(db: Queryable, buyerId: number, now: Date) {
 export type DecisionResult = { ok: true; email: Email } | Failure;
 
 /** What a decision's transaction hands back for the Notification. */
-type Decided = { ok: true; purchase: Purchase; email: Email } | Failure;
+type CommittedDecision = { ok: true; purchase: Purchase; email: Email } | Failure;
 
 function findOpenRefundRequest(
   tx: Queryable,
@@ -685,7 +648,7 @@ export async function approveRefundRequest(
   note: string | null,
   now: Date
 ): Promise<DecisionResult> {
-  const decided = db.transaction((tx): Decided => {
+  const decided = db.transaction((tx): CommittedDecision => {
     const found = findOpenRefundRequest(tx, refundRequestId);
     if (!found.ok) return found;
 
@@ -785,7 +748,7 @@ export async function declineRefundRequest(
     };
   }
 
-  const decided = db.transaction((tx): Decided => {
+  const decided = db.transaction((tx): CommittedDecision => {
     const found = findOpenRefundRequest(tx, refundRequestId);
     if (!found.ok) return found;
 
