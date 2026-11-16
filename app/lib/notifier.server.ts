@@ -53,8 +53,27 @@ export type DiscussionReplyNotification = {
   };
 };
 
+/** Someone asked a Discussion Question on the recipient's course. Catalogue #6. */
+export type DiscussionQuestionNotification = {
+  kind: "discussion_question";
+  recipients: Person[];
+  actor: Person;
+  /** One per domain event, so a retry can't send the Notification twice. */
+  idempotencyKey: string;
+  data: {
+    commentId: number;
+    courseTitle: string;
+    lessonTitle: string;
+    snippet: string;
+    /** Where clicking the Notification goes. */
+    url: string;
+  };
+};
+
 /** Every Notification Cadence sends. Later kinds join this union. */
-export type Notification = DiscussionReplyNotification;
+export type Notification =
+  | DiscussionReplyNotification
+  | DiscussionQuestionNotification;
 
 export type NotificationKind = Notification["kind"];
 
@@ -63,11 +82,18 @@ export const NOTIFICATION_CATEGORY: Record<
   NotificationCategory
 > = {
   discussion_reply: "discussion_replies",
+  discussion_question: "discussion_questions",
 };
 
 export interface Notifier {
   /** Sends one Notification to its recipients. May throw. */
   notify(notification: Notification): Promise<void>;
+  /**
+   * Archives every Notification caused by a comment (its Discussion Question
+   * or Discussion Reply Notification), so it leaves the Notification Feed.
+   * May throw.
+   */
+  archiveByComment(commentId: number): Promise<void>;
 }
 
 /**
@@ -88,17 +114,42 @@ export async function notifySafely(
   }
 }
 
+/**
+ * Archives the Notifications a deleted comment caused, logging instead of
+ * throwing when it fails.
+ */
+export async function archiveByCommentSafely(
+  notifier: Notifier,
+  commentId: number
+): Promise<void> {
+  try {
+    await notifier.archiveByComment(commentId);
+  } catch (error) {
+    console.error(
+      `Archiving Notifications for comment:${commentId} failed:`,
+      error
+    );
+  }
+}
+
 export type FakeNotifier = Notifier & {
   /** Every Notification sent, in order. */
   notifications: Notification[];
+  /** Every comment whose Notifications were archived, in order. */
+  archivedCommentIds: number[];
 };
 
 export function createFakeNotifier(): FakeNotifier {
   const notifications: Notification[] = [];
+  const archivedCommentIds: number[] = [];
   return {
     notifications,
+    archivedCommentIds,
     async notify(notification) {
       notifications.push(notification);
+    },
+    async archiveByComment(commentId) {
+      archivedCommentIds.push(commentId);
     },
   };
 }
@@ -110,6 +161,11 @@ export function loggingNotifier(): Notifier {
         `[notifier] No Knock key set; not sending ${notification.kind} (${notification.idempotencyKey}) to ${notification.recipients
           .map((r) => r.id)
           .join(", ")}`
+      );
+    },
+    async archiveByComment(commentId) {
+      console.info(
+        `[notifier] No Knock key set; not archiving Notifications for comment:${commentId}`
       );
     },
   };
