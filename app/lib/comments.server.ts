@@ -2,6 +2,7 @@ import { eq, inArray } from "drizzle-orm";
 import { comments, courses, lessons, modules, users } from "~/db/schema";
 import { MAX_COMMENT_LENGTH, MIN_COMMENT_LENGTH } from "~/lib/comments";
 import {
+  archiveByCommentSafely,
   notifySafely,
   type Notifier,
   type Person,
@@ -99,24 +100,32 @@ function getPeople(db: Db, ids: number[]): Map<number, Person> {
 }
 
 /**
- * A reply tells whoever wrote the comment it answers (a Discussion Question,
- * or the Instructor's own top-level comment), unless they wrote the reply.
+ * Who a new comment notifies, if anyone:
+ * - a Discussion Question tells the course's Instructor;
+ * - a reply tells whoever wrote the comment it answers (a Discussion
+ *   Question, or the Instructor's own top-level comment), unless they wrote
+ *   the reply;
+ * - the Instructor's own top-level comment tells nobody.
  */
-async function notifyAboutReply(
+async function notifyAboutComment(
   db: Db,
   notifier: Notifier,
   created: CreatedComment
 ) {
-  const { comment, questionAuthorId, course, lesson } = created;
-  if (questionAuthorId === comment.userId) return;
+  const { comment, kind, questionAuthorId, course, lesson } = created;
+  if (kind === "instructor_comment") return;
 
-  const people = getPeople(db, [questionAuthorId, comment.userId]);
-  const recipient = people.get(questionAuthorId);
+  const recipientId =
+    kind === "discussion_question" ? course.instructorId : questionAuthorId;
+  if (recipientId === comment.userId) return;
+
+  const people = getPeople(db, [recipientId, comment.userId]);
+  const recipient = people.get(recipientId);
   const actor = people.get(comment.userId);
   if (!recipient || !actor) return;
 
   await notifySafely(notifier, {
-    kind: "discussion_reply",
+    kind,
     recipients: [recipient],
     actor,
     idempotencyKey: `comment:${comment.id}`,
@@ -134,7 +143,8 @@ async function notifyAboutReply(
  * Posts a comment on a lesson: top-level when `parentId` is null, otherwise a
  * reply to that top-level comment. Replies are one level deep. Who may comment
  * on the lesson is the caller's check. Once the comment is saved, a Discussion
- * Reply Notification goes out (best-effort: a failure is logged, not thrown).
+ * Question or Discussion Reply Notification goes out (best-effort: a failure
+ * is logged, not thrown).
  */
 export async function createComment(
   db: Db,
@@ -192,9 +202,7 @@ export async function createComment(
     lesson: found.lesson,
   };
 
-  if (kind === "discussion_reply") {
-    await notifyAboutReply(db, notifier, created);
-  }
+  await notifyAboutComment(db, notifier, created);
 
   return created;
 }
@@ -231,15 +239,19 @@ export function updateComment(
 /**
  * Soft-deletes a comment (sets `deletedAt`). Its author may delete it, and so
  * may staff (the course's Instructor or a Platform Admin). Deleting a comment
- * that is already deleted changes nothing.
+ * that is already deleted changes nothing. Once deleted, the Notification the
+ * comment caused is archived so it leaves the Notification Feed (best-effort).
+ * Replies' Notifications under a deleted Discussion Question stay, since the
+ * replies stay visible.
  */
-export function deleteComment(
+export async function deleteComment(
   db: Db,
+  notifier: Notifier,
   commentId: number,
   userId: number,
   isStaff: boolean,
   now: Date
-): Comment {
+): Promise<Comment> {
   const existing = getCommentById(db, commentId);
   if (!existing) {
     throw new Error("Comment not found");
@@ -251,10 +263,14 @@ export function deleteComment(
     return existing;
   }
 
-  return db
+  const deleted = db
     .update(comments)
     .set({ deletedAt: now.toISOString() })
     .where(eq(comments.id, commentId))
     .returning()
     .get();
+
+  await archiveByCommentSafely(notifier, commentId);
+
+  return deleted;
 }

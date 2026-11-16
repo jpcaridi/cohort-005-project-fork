@@ -14,6 +14,7 @@ import type {
 
 const WORKFLOW_KEY: Record<NotificationKind, string> = {
   discussion_reply: "discussion-reply",
+  discussion_question: "discussion-question",
   refund_requested: "refund-requested",
   refund_approved: "refund-approved",
   refund_declined: "refund-declined",
@@ -49,6 +50,20 @@ export function knockNotifier(secretKey: string): Notifier {
         },
         { idempotencyKey: notification.idempotencyKey }
       );
+    },
+
+    async archiveByComment(commentId: number) {
+      // Filter on the flat `commentId` trigger data. It must stay a number:
+      // Knock matches the type it was triggered with.
+      const messageIds: string[] = [];
+      for await (const message of knock.messages.list({
+        trigger_data: JSON.stringify({ commentId }),
+      })) {
+        if (!message.archived_at) messageIds.push(message.id);
+      }
+      // An empty batch is a 422.
+      if (messageIds.length === 0) return;
+      await knock.messages.batch.archive({ message_ids: messageIds });
     },
   };
 }

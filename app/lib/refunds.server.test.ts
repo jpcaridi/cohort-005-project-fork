@@ -784,6 +784,7 @@ describe("Refund Request Notifications", () => {
 
   it("still raises and decides, and logs, when the Notifier fails", async () => {
     const failing: Notifier = {
+      ...createFakeNotifier(),
       async notify() {
         throw new Error("Knock is down");
       },
