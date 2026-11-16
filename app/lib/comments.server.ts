@@ -1,12 +1,18 @@
-import { eq } from "drizzle-orm";
-import { comments, courses, lessons, modules } from "~/db/schema";
+import { eq, inArray } from "drizzle-orm";
+import { comments, courses, lessons, modules, users } from "~/db/schema";
 import { MAX_COMMENT_LENGTH, MIN_COMMENT_LENGTH } from "~/lib/comments";
+import {
+  notifySafely,
+  type Notifier,
+  type Person,
+} from "~/lib/notifier.server";
 import type { Db } from "~/lib/refunds.server";
 
 // ─── Comments ───
 // Writing comments on a lesson: Discussion Questions, Discussion Replies and
 // the course's Instructor's own top-level comments. See GLOSSARY.md.
-// Takes the database first and `now` last, like the refunds service. Failures
+// Takes the database first and `now` last, like the refunds service; a
+// Notifier, where one is needed, comes right after the database. Failures
 // a person can correct are thrown as Errors with a message they can read.
 
 export type Comment = typeof comments.$inferSelect;
@@ -68,19 +74,77 @@ function assertValidBody(body: string) {
   return trimmed;
 }
 
+/** How much of a comment a Notification quotes. */
+const SNIPPET_LENGTH = 140;
+
+function snippetOf(body: string) {
+  const oneLine = body.replace(/\s+/g, " ");
+  return oneLine.length > SNIPPET_LENGTH
+    ? `${oneLine.slice(0, SNIPPET_LENGTH - 1).trimEnd()}…`
+    : oneLine;
+}
+
+function getPeople(db: Db, ids: number[]): Map<number, Person> {
+  const rows = db
+    .select({
+      id: users.id,
+      name: users.name,
+      email: users.email,
+      avatarUrl: users.avatarUrl,
+    })
+    .from(users)
+    .where(inArray(users.id, ids))
+    .all();
+  return new Map(rows.map((row) => [row.id, row]));
+}
+
+/**
+ * A reply tells whoever wrote the comment it answers (a Discussion Question,
+ * or the Instructor's own top-level comment), unless they wrote the reply.
+ */
+async function notifyAboutReply(
+  db: Db,
+  notifier: Notifier,
+  created: CreatedComment
+) {
+  const { comment, questionAuthorId, course, lesson } = created;
+  if (questionAuthorId === comment.userId) return;
+
+  const people = getPeople(db, [questionAuthorId, comment.userId]);
+  const recipient = people.get(questionAuthorId);
+  const actor = people.get(comment.userId);
+  if (!recipient || !actor) return;
+
+  await notifySafely(notifier, {
+    kind: "discussion_reply",
+    recipients: [recipient],
+    actor,
+    idempotencyKey: `comment:${comment.id}`,
+    data: {
+      commentId: comment.id,
+      courseTitle: course.title,
+      lessonTitle: lesson.title,
+      snippet: snippetOf(comment.body),
+      url: `/courses/${course.slug}/lessons/${lesson.id}#comment-${comment.id}`,
+    },
+  });
+}
+
 /**
  * Posts a comment on a lesson: top-level when `parentId` is null, otherwise a
  * reply to that top-level comment. Replies are one level deep. Who may comment
- * on the lesson is the caller's check.
+ * on the lesson is the caller's check. Once the comment is saved, a Discussion
+ * Reply Notification goes out (best-effort: a failure is logged, not thrown).
  */
-export function createComment(
+export async function createComment(
   db: Db,
+  notifier: Notifier,
   authorId: number,
   lessonId: number,
   parentId: number | null,
   body: string,
   now: Date
-): CreatedComment {
+): Promise<CreatedComment> {
   const trimmed = assertValidBody(body);
 
   const found = getLessonWithCourse(db, lessonId);
@@ -120,13 +184,19 @@ export function createComment(
       ? "instructor_comment"
       : "discussion_question";
 
-  return {
+  const created: CreatedComment = {
     comment,
     kind,
     questionAuthorId: parent ? parent.userId : authorId,
     course: found.course,
     lesson: found.lesson,
   };
+
+  if (kind === "discussion_reply") {
+    await notifyAboutReply(db, notifier, created);
+  }
+
+  return created;
 }
 
 /** Changes the author's own comment. Edits don't change what was sent about it. */
