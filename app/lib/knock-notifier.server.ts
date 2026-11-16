@@ -14,6 +14,10 @@ import type {
 
 const WORKFLOW_KEY: Record<NotificationKind, string> = {
   discussion_reply: "discussion-reply",
+  refund_requested: "refund-requested",
+  refund_approved: "refund-approved",
+  refund_declined: "refund-declined",
+  open_refund_request: "open-refund-request",
 };
 
 export function knockUserId(cadenceUserId: number): string {
@@ -38,7 +42,8 @@ export function knockNotifier(secretKey: string): Notifier {
         WORKFLOW_KEY[notification.kind],
         {
           recipients: notification.recipients.map(knockUser),
-          actor: knockUser(notification.actor),
+          // No actor means Cadence itself sent it (the "C" avatar).
+          actor: notification.actor ? knockUser(notification.actor) : undefined,
           // Flat values only, so Knock can filter messages by trigger data.
           data: { kind: notification.kind, ...notification.data },
         },

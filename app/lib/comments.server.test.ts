@@ -224,6 +224,7 @@ describe("Discussion Reply Notifications", () => {
     await reply(platformAdmin.id, question.id, `Start\n\n${"word ".repeat(100)}`);
 
     const [sent] = notifier.notifications;
+    if (sent.kind !== "discussion_reply") throw new Error(sent.kind);
     expect(sent.data.snippet).toMatch(/^Start word word /);
     expect(sent.data.snippet.length).toBeLessThanOrEqual(140);
     expect(sent.data.snippet.endsWith("…")).toBe(true);

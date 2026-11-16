@@ -53,8 +53,70 @@ export type DiscussionReplyNotification = {
   };
 };
 
+/**
+ * The buyer raised a Refund Request; it is under review. Catalogue #8. Sent
+ * by Cadence itself, so there is no actor (the Feed shows the Cadence "C"
+ * avatar), and there is nowhere to go (`url` is null).
+ */
+export type RefundRequestedNotification = {
+  kind: "refund_requested";
+  recipients: Person[];
+  actor: null;
+  idempotencyKey: string;
+  data: {
+    refundRequestId: number;
+    courseTitle: string;
+    /** What the buyer paid, in cents. */
+    amount: number;
+    url: null;
+  };
+};
+
+/** A buyer raised a Refund Request a Platform Admin must decide. Catalogue #3. */
+export type OpenRefundRequestNotification = {
+  kind: "open_refund_request";
+  recipients: Person[];
+  /** The buyer who asked. */
+  actor: Person;
+  idempotencyKey: string;
+  data: {
+    refundRequestId: number;
+    courseTitle: string;
+    /** What the buyer paid, in cents. */
+    amount: number;
+    reason: string;
+    url: string;
+  };
+};
+
+/**
+ * A Platform Admin approved (catalogue #1) or declined (catalogue #2) the
+ * recipient's Refund Request.
+ */
+export type RefundDecidedNotification = {
+  kind: "refund_approved" | "refund_declined";
+  recipients: Person[];
+  /** The Platform Admin who decided. */
+  actor: Person;
+  idempotencyKey: string;
+  data: {
+    refundRequestId: number;
+    purchaseId: number;
+    courseTitle: string;
+    /** What the buyer paid, in cents. */
+    amount: number;
+    /** Always set on a decline; optional on an approval. */
+    decisionNote: string | null;
+    url: string;
+  };
+};
+
 /** Every Notification Cadence sends. Later kinds join this union. */
-export type Notification = DiscussionReplyNotification;
+export type Notification =
+  | DiscussionReplyNotification
+  | RefundRequestedNotification
+  | OpenRefundRequestNotification
+  | RefundDecidedNotification;
 
 export type NotificationKind = Notification["kind"];
 
@@ -63,6 +125,10 @@ export const NOTIFICATION_CATEGORY: Record<
   NotificationCategory
 > = {
   discussion_reply: "discussion_replies",
+  refund_requested: "refund_request_updates",
+  refund_approved: "refund_request_updates",
+  refund_declined: "refund_request_updates",
+  open_refund_request: "open_refund_requests",
 };
 
 export interface Notifier {
