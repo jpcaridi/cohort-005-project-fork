@@ -1,9 +1,14 @@
-import Knock from "@knocklabs/node";
+import Knock, { NotFoundError } from "@knocklabs/node";
+import type { PreferenceSet } from "@knocklabs/node/resources/recipients/preferences";
 import type {
   Notification,
+  NotificationCategory,
+  NotificationChannel,
   NotificationKind,
+  NotificationPreferences,
   Notifier,
   Person,
+  PreferenceChange,
 } from "~/lib/notifier.server";
 
 // ─── Knock adapter ───
@@ -33,6 +38,17 @@ function knockUser(person: Person) {
 export function knockNotifier(secretKey: string): Notifier {
   const knock = new Knock({ apiKey: secretKey });
 
+  async function mergePreferences(
+    userId: number,
+    preferences: NotificationPreferences
+  ) {
+    await knock.users.setPreferences(knockUserId(userId), PREFERENCE_SET, {
+      // Knock replaces the whole set unless told to merge.
+      __persistence_strategy__: "merge",
+      categories: toKnockCategories(preferences),
+    });
+  }
+
   return {
     async notify(notification: Notification) {
       await knock.workflows.trigger(
@@ -60,5 +76,107 @@ export function knockNotifier(secretKey: string): Notifier {
       if (messageIds.length === 0) return;
       await knock.messages.batch.archive({ message_ids: messageIds });
     },
+
+    async syncUser(person: Person) {
+      const { id, ...properties } = knockUser(person);
+      await knock.users.update(id, properties);
+    },
+
+    async getPreferences(userId: number) {
+      let set;
+      try {
+        set = await knock.users.getPreferences(
+          knockUserId(userId),
+          PREFERENCE_SET
+        );
+      } catch (error) {
+        if (error instanceof NotFoundError) return null;
+        throw error;
+      }
+      return fromKnockCategories(set.categories);
+    },
+
+    mergePreferences,
+
+    async setPreference(
+      userId: number,
+      { category, channel, enabled }: PreferenceChange
+    ) {
+      await mergePreferences(userId, { [category]: { [channel]: enabled } });
+    },
   };
+}
+
+// ─── Preferences ───
+// Cadence's category × channel preferences live in each user's "default"
+// Knock preference set, as `categories.<knock key>.channel_types.<type>`.
+
+const PREFERENCE_SET = "default";
+
+export const CATEGORY_KEY: Record<NotificationCategory, string> = {
+  refund_request_updates: "refund-request-updates",
+  open_refund_requests: "open-refund-requests",
+  seat_claims: "seat-claims",
+  enrollments: "enrollments",
+  discussion_questions: "discussion-questions",
+  discussion_replies: "discussion-replies",
+};
+
+const CHANNEL_TYPE: Record<NotificationChannel, "in_app_feed"> = {
+  feed: "in_app_feed",
+};
+
+type KnockCategories = NonNullable<PreferenceSet["categories"]>;
+
+function toKnockCategories(preferences: NotificationPreferences) {
+  const categories: Record<
+    string,
+    { channel_types: Partial<Record<"in_app_feed", boolean>> }
+  > = {};
+  for (const [category, channels] of Object.entries(preferences) as [
+    NotificationCategory,
+    Partial<Record<NotificationChannel, boolean>>,
+  ][]) {
+    const channelTypes: Partial<Record<"in_app_feed", boolean>> = {};
+    for (const [channel, enabled] of Object.entries(channels) as [
+      NotificationChannel,
+      boolean,
+    ][]) {
+      channelTypes[CHANNEL_TYPE[channel]] = enabled;
+    }
+    categories[CATEGORY_KEY[category]] = { channel_types: channelTypes };
+  }
+  return categories;
+}
+
+/** Null when the set holds none of Cadence's categories. */
+function fromKnockCategories(
+  categories: KnockCategories | null | undefined
+): NotificationPreferences | null {
+  if (!categories) return null;
+  const preferences: NotificationPreferences = {};
+  for (const [category, key] of Object.entries(CATEGORY_KEY) as [
+    NotificationCategory,
+    string,
+  ][]) {
+    const setting = categories[key];
+    if (setting === undefined) continue;
+    const channels: Partial<Record<NotificationChannel, boolean>> = {};
+    for (const [channel, type] of Object.entries(CHANNEL_TYPE) as [
+      NotificationChannel,
+      "in_app_feed",
+    ][]) {
+      if (typeof setting === "boolean") {
+        channels[channel] = setting;
+      } else {
+        const value = setting.channel_types?.[type];
+        // A conditional setting counts as on; a missing one defers to Knock.
+        if (value !== undefined && value !== null) {
+          channels[channel] = value !== false;
+        }
+      }
+    }
+    preferences[category] = channels;
+  }
+  return Object.keys(preferences).length > 0 ? preferences : null;
 }

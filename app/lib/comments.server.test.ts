@@ -51,6 +51,7 @@ beforeEach(() => {
 });
 
 const failing: Notifier = {
+  ...createFakeNotifier(),
   async notify() {
     throw new Error("Knock is down");
   },
