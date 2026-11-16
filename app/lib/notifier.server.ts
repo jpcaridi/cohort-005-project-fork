@@ -70,6 +70,38 @@ export type DiscussionQuestionNotification = {
   };
 };
 
+/** A Student claimed a Seat on the recipient's Team Licence. Catalogue #4. */
+export type SeatClaimedNotification = {
+  kind: "seat_claimed";
+  recipients: Person[];
+  actor: Person;
+  /** One per domain event, so a retry can't send the Notification twice. */
+  idempotencyKey: string;
+  data: {
+    seatId: number;
+    courseTitle: string;
+    /** Seats on the Team Licence that can still be claimed, after this one. */
+    seatsLeft: number;
+    /** Where clicking the Notification goes. */
+    url: string;
+  };
+};
+
+/** A Student enrolled on a course the recipient teaches. Catalogue #5. */
+export type EnrollmentNotification = {
+  kind: "enrollment";
+  recipients: Person[];
+  actor: Person;
+  /** One per domain event, so a retry can't send the Notification twice. */
+  idempotencyKey: string;
+  data: {
+    enrollmentId: number;
+    courseTitle: string;
+    /** Where clicking the Notification goes. */
+    url: string;
+  };
+};
+
 /**
  * The buyer raised a Refund Request; it is under review. Catalogue #8. Sent
  * by Cadence itself, so there is no actor (the Feed shows the Cadence "C"
@@ -134,7 +166,9 @@ export type Notification =
   | DiscussionQuestionNotification
   | RefundRequestedNotification
   | OpenRefundRequestNotification
-  | RefundDecidedNotification;
+  | RefundDecidedNotification
+  | SeatClaimedNotification
+  | EnrollmentNotification;
 
 export type NotificationKind = Notification["kind"];
 
@@ -148,6 +182,8 @@ export const NOTIFICATION_CATEGORY: Record<
   refund_approved: "refund_request_updates",
   refund_declined: "refund_request_updates",
   open_refund_request: "open_refund_requests",
+  seat_claimed: "seat_claims",
+  enrollment: "enrollments",
 };
 
 export interface Notifier {

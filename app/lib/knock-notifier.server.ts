@@ -24,6 +24,8 @@ const WORKFLOW_KEY: Record<NotificationKind, string> = {
   refund_approved: "refund-approved",
   refund_declined: "refund-declined",
   open_refund_request: "open-refund-request",
+  seat_claimed: "seat-claimed",
+  enrollment: "enrollment",
 };
 
 export function knockUserId(cadenceUserId: number): string {
