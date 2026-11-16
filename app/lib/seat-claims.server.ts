@@ -1,11 +1,18 @@
 import { and, eq, isNull } from "drizzle-orm";
 import { coupons, courses, purchases, users } from "~/db/schema";
-import { enrollUser, findEnrollment, type Enrollment } from "~/lib/enrollments.server";
+import {
+  enrollUser,
+  findEnrollment,
+  getPeople,
+  type Enrollment,
+} from "~/lib/enrollments.server";
+import { notifySafely, type Notifier } from "~/lib/notifier.server";
 import { getSeatAvailability, type Db } from "~/lib/refunds.server";
 
 // ─── Seat claims ───
 // A Student claiming a Seat on a Team Licence, which gives them an Enrollment.
-// Takes the database first and `now` last, like the refunds service.
+// Takes the database first, the Notifier next and `now` last, like the
+// comments service.
 
 type Seat = typeof coupons.$inferSelect;
 type Purchase = typeof purchases.$inferSelect;
@@ -35,15 +42,19 @@ export function findSeatByCode(db: Db, code: string) {
 
 /**
  * Claims the Seat with this code for the Student and enrolls them. A Seat can
- * only be claimed from the country the Team Licence was bought in.
+ * only be claimed from the country the Team Licence was bought in. Once the
+ * claim is saved, the Team Admin gets a Seat-claim Notification (unless they
+ * claimed it themselves) and the Instructor an Enrollment Notification
+ * (best-effort: a failure is logged, not thrown).
  */
-export function claimSeat(
+export async function claimSeat(
   db: Db,
+  notifier: Notifier,
   code: string,
   userId: number,
   userCountry: string,
   now: Date
-): ClaimResult {
+): Promise<ClaimResult> {
   const seat = findSeatByCode(db, code);
   if (!seat) {
     return { ok: false, error: "Coupon not found" };
@@ -102,7 +113,13 @@ export function claimSeat(
     .returning()
     .get();
 
-  const enrollment = enrollUser(db, userId, seat.courseId, now);
+  const enrollment = await enrollUser(
+    db,
+    notifier,
+    userId,
+    seat.courseId,
+    now
+  );
 
   const seatsLeft = db
     .select({ id: coupons.id })
@@ -115,6 +132,26 @@ export function claimSeat(
       )
     )
     .all().length;
+
+  if (teamAdmin.id !== userId) {
+    const people = getPeople(db, [teamAdmin.id, userId]);
+    const recipient = people.get(teamAdmin.id);
+    const student = people.get(userId);
+    if (recipient && student) {
+      await notifySafely(notifier, {
+        kind: "seat_claimed",
+        recipients: [recipient],
+        actor: student,
+        idempotencyKey: `seat-claimed:${claimedSeat.id}`,
+        data: {
+          seatId: claimedSeat.id,
+          courseTitle: course.title,
+          seatsLeft,
+          url: "/team",
+        },
+      });
+    }
+  }
 
   return {
     ok: true,

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { formatPrice } from "~/lib/utils";
 import type { Notification, NotificationKind } from "~/lib/notifier.server";
 
 // ─── Notification Feed (client) ───
@@ -92,17 +93,59 @@ export type FeedRow = {
   href: string | null;
 };
 
-type DataOf<K extends NotificationKind> = Extract<
-  Notification,
-  { kind: K }
->["data"];
+// Distributes over the union, so a type covering two kinds (approved and
+// declined) still gives each kind its data.
+type DataFor<N, K> = N extends { kind: infer NK; data: infer D }
+  ? K extends NK
+    ? D
+    : never
+  : never;
+type DataOf<K extends NotificationKind> = DataFor<Notification, K>;
+
+const commentData = z.object({
+  commentId: z.number(),
+  courseTitle: z.string(),
+  lessonTitle: z.string(),
+  snippet: z.string(),
+  url: z.string(),
+});
+
+const refundDecidedData = z.object({
+  refundRequestId: z.number(),
+  purchaseId: z.number(),
+  courseTitle: z.string(),
+  amount: z.number(),
+  decisionNote: z.string().nullable(),
+  url: z.string(),
+});
 
 const DATA_SCHEMA: { [K in NotificationKind]: z.ZodType<DataOf<K>> } = {
-  discussion_reply: z.object({
-    commentId: z.number(),
+  discussion_reply: commentData,
+  discussion_question: commentData,
+  refund_requested: z.object({
+    refundRequestId: z.number(),
     courseTitle: z.string(),
-    lessonTitle: z.string(),
-    snippet: z.string(),
+    amount: z.number(),
+    url: z.null(),
+  }),
+  open_refund_request: z.object({
+    refundRequestId: z.number(),
+    courseTitle: z.string(),
+    amount: z.number(),
+    reason: z.string(),
+    url: z.string(),
+  }),
+  refund_approved: refundDecidedData,
+  refund_declined: refundDecidedData,
+  seat_claimed: z.object({
+    seatId: z.number(),
+    courseTitle: z.string(),
+    seatsLeft: z.number(),
+    url: z.string(),
+  }),
+  enrollment: z.object({
+    enrollmentId: z.number(),
+    courseTitle: z.string(),
     url: z.string(),
   }),
 };
@@ -114,6 +157,50 @@ const COPY: {
     title: `${actorName} replied to your comment on ${data.lessonTitle}`,
     snippet: quote(data.snippet),
     icon: "discussion",
+    href: data.url,
+  }),
+  discussion_question: (data, actorName) => ({
+    title: `${actorName} asked a question on ${data.lessonTitle}`,
+    snippet: quote(data.snippet),
+    icon: "discussion",
+    href: data.url,
+  }),
+  refund_requested: (data) => ({
+    title: `We've received your ${formatPrice(data.amount)} Refund Request for ${data.courseTitle}`,
+    snippet: "A Platform Admin will review it.",
+    icon: "refund",
+    href: data.url,
+  }),
+  open_refund_request: (data, actorName) => ({
+    title: `${actorName} requested a ${formatPrice(data.amount)} refund for ${data.courseTitle}`,
+    snippet: quote(data.reason),
+    icon: "refund",
+    href: data.url,
+  }),
+  refund_approved: (data) => ({
+    title: `Your Refund Request for ${data.courseTitle} was approved`,
+    snippet: data.decisionNote ? quote(data.decisionNote) : null,
+    icon: "refund",
+    href: data.url,
+  }),
+  refund_declined: (data) => ({
+    title: `Your Refund Request for ${data.courseTitle} was declined`,
+    snippet: data.decisionNote
+      ? `${quote(data.decisionNote)} You can ask again.`
+      : "You can ask again.",
+    icon: "refund",
+    href: data.url,
+  }),
+  seat_claimed: (data, actorName) => ({
+    title: `${actorName} claimed a Seat for ${data.courseTitle}`,
+    snippet: `${data.seatsLeft} ${data.seatsLeft === 1 ? "Seat" : "Seats"} left`,
+    icon: "team",
+    href: data.url,
+  }),
+  enrollment: (data, actorName) => ({
+    title: `${actorName} enrolled in ${data.courseTitle}`,
+    snippet: null,
+    icon: "enrollment",
     href: data.url,
   }),
 };

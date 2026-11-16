@@ -1,0 +1,26 @@
+{
+  "name": "Discussion Question",
+  "description": "Catalogue #6: someone asked a Discussion Question on a course the recipient teaches. Feed only in v1; an email step can be added later.",
+  "steps": [
+    {
+      "type": "channel",
+      "template": {
+        "action_url": "{{ data.url }}",
+        "markdown_body@": "in_app_feed_1/markdown_body.md"
+      },
+      "ref": "in_app_feed_1",
+      "channel_type": "in_app_feed",
+      "channel_key": "in-app"
+    }
+  ],
+  "categories": [
+    "discussion-questions"
+  ],
+  "trigger_frequency": "every_trigger",
+  "__readonly": {
+    "key": "discussion-question",
+    "active": true,
+    "valid": true
+  },
+  "$schema": "https://schemas.knock.app/cli/workflow.json"
+}

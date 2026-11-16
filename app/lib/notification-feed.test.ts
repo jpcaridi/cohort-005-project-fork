@@ -65,6 +65,147 @@ describe("describeNotification", () => {
     ).toBeNull();
   });
 
+  it("says who asked a Discussion Question, linking to it", () => {
+    const row = describeNotification(
+      { ...reply, kind: "discussion_question", snippet: "Why not `in`?" },
+      "Emma Wilson"
+    );
+    expect(row.title).toBe("Emma Wilson asked a question on Narrowing");
+    expect(row.snippet).toBe("“Why not `in`?”");
+    expect(row.icon).toBe("discussion");
+    expect(row.href).toBe("/courses/ts/lessons/7#comment-42");
+  });
+
+  it("confirms a Refund Request with nowhere to go", () => {
+    const row = describeNotification(
+      {
+        kind: "refund_requested",
+        refundRequestId: 3,
+        courseTitle: "TypeScript Fundamentals",
+        amount: 14900,
+        url: null,
+      },
+      null
+    );
+    expect(row.title).toBe(
+      "We've received your $149.00 Refund Request for TypeScript Fundamentals"
+    );
+    expect(row.snippet).toBe("A Platform Admin will review it.");
+    expect(row.icon).toBe("refund");
+    expect(row.href).toBeNull();
+  });
+
+  it("tells a Platform Admin who asked for how much, and why", () => {
+    const row = describeNotification(
+      {
+        kind: "open_refund_request",
+        refundRequestId: 3,
+        courseTitle: "TypeScript Fundamentals",
+        amount: 14900,
+        reason: "Bought the wrong course.",
+        url: "/admin/refunds",
+      },
+      "Emma Wilson"
+    );
+    expect(row.title).toBe(
+      "Emma Wilson requested a $149.00 refund for TypeScript Fundamentals"
+    );
+    expect(row.snippet).toBe("“Bought the wrong course.”");
+    expect(row.icon).toBe("refund");
+    expect(row.href).toBe("/admin/refunds");
+  });
+
+  const decided = {
+    refundRequestId: 3,
+    purchaseId: 8,
+    courseTitle: "TypeScript Fundamentals",
+    amount: 14900,
+    url: "/settings",
+  };
+
+  it("tells the buyer their Refund Request was approved, with any note", () => {
+    const withNote = describeNotification(
+      {
+        ...decided,
+        kind: "refund_approved",
+        decisionNote: "Sorry to see you go.",
+      },
+      "Alex Rivera"
+    );
+    expect(withNote.title).toBe(
+      "Your Refund Request for TypeScript Fundamentals was approved"
+    );
+    expect(withNote.snippet).toBe("“Sorry to see you go.”");
+    expect(withNote.href).toBe("/settings");
+    const withoutNote = describeNotification(
+      { ...decided, kind: "refund_approved", decisionNote: null },
+      "Alex Rivera"
+    );
+    expect(withoutNote.snippet).toBeNull();
+  });
+
+  it("tells the buyer their Refund Request was declined, and that they can ask again", () => {
+    const row = describeNotification(
+      {
+        ...decided,
+        kind: "refund_declined",
+        decisionNote: "Over half watched.",
+      },
+      "Alex Rivera"
+    );
+    expect(row.title).toBe(
+      "Your Refund Request for TypeScript Fundamentals was declined"
+    );
+    expect(row.snippet).toBe("“Over half watched.” You can ask again.");
+    expect(row.icon).toBe("refund");
+  });
+
+  it("tells a Team Admin who claimed a Seat and how many are left", () => {
+    const row = describeNotification(
+      {
+        kind: "seat_claimed",
+        seatId: 4,
+        courseTitle: "TypeScript Fundamentals",
+        seatsLeft: 1,
+        url: "/team",
+      },
+      "James Park"
+    );
+    expect(row.title).toBe(
+      "James Park claimed a Seat for TypeScript Fundamentals"
+    );
+    expect(row.snippet).toBe("1 Seat left");
+    expect(row.icon).toBe("team");
+    expect(row.href).toBe("/team");
+    const many = describeNotification(
+      {
+        kind: "seat_claimed",
+        seatId: 4,
+        courseTitle: "TypeScript Fundamentals",
+        seatsLeft: 3,
+        url: "/team",
+      },
+      "James Park"
+    );
+    expect(many.snippet).toBe("3 Seats left");
+  });
+
+  it("tells an Instructor who enrolled", () => {
+    const row = describeNotification(
+      {
+        kind: "enrollment",
+        enrollmentId: 9,
+        courseTitle: "TypeScript Fundamentals",
+        url: "/instructor/1/students",
+      },
+      "James Park"
+    );
+    expect(row.title).toBe("James Park enrolled in TypeScript Fundamentals");
+    expect(row.snippet).toBeNull();
+    expect(row.icon).toBe("enrollment");
+    expect(row.href).toBe("/instructor/1/students");
+  });
+
   it("still renders a row for data it doesn't recognise", () => {
     const row = describeNotification({ kind: "from_the_future" }, null);
     expect(row.title).toBe("New notification");

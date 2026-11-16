@@ -14,6 +14,8 @@ import {
   QuestionType,
   TeamMemberRole,
 } from "../app/db/schema";
+import { getNotifier } from "../app/lib/notifier.server";
+import { syncAllUsers } from "../app/lib/user-sync.server";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -2810,6 +2812,12 @@ This course is still in draft while the cluster examples are rewritten against t
   }
 
   console.log(`Created ${watchEventRows.length} video watch events.`);
+
+  // ─── Sync users to the Notifier ───
+  // Knock when a key is set, otherwise the logging adapter (a no-op).
+
+  const synced = await syncAllUsers(db, await getNotifier());
+  console.log(`Synced ${synced} users to the Notifier.`);
 
   // ─── Summary ───
 
