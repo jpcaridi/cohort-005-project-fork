@@ -1,13 +1,13 @@
-import { eq, inArray } from "drizzle-orm";
-import { comments, courses, lessons, modules, users } from "~/db/schema";
+import { eq } from "drizzle-orm";
+import { comments, courses, lessons, modules } from "~/db/schema";
 import { MAX_COMMENT_LENGTH, MIN_COMMENT_LENGTH } from "~/lib/comments";
 import {
   archiveByCommentSafely,
   notifySafely,
   type Notifier,
-  type Person,
 } from "~/lib/notifier.server";
-import type { Db } from "~/lib/refunds.server";
+import type { Db } from "~/db";
+import { getPeople } from "~/lib/people.server";
 
 // ─── Comments ───
 // Writing comments on a lesson: Discussion Questions, Discussion Replies and
@@ -85,35 +85,24 @@ function snippetOf(body: string) {
     : oneLine;
 }
 
-function getPeople(db: Db, ids: number[]): Map<number, Person> {
-  const rows = db
-    .select({
-      id: users.id,
-      name: users.name,
-      email: users.email,
-      avatarUrl: users.avatarUrl,
-    })
-    .from(users)
-    .where(inArray(users.id, ids))
-    .all();
-  return new Map(rows.map((row) => [row.id, row]));
-}
-
 /**
  * Who a new comment notifies, if anyone:
  * - a Discussion Question tells the course's Instructor;
  * - a reply tells whoever wrote the comment it answers (a Discussion
  *   Question, or the Instructor's own top-level comment), unless they wrote
- *   the reply;
+ *   the reply, and unless that comment has been deleted (its author's
+ *   comment is gone, so its Notifications are too);
  * - the Instructor's own top-level comment tells nobody.
  */
 async function notifyAboutComment(
   db: Db,
   notifier: Notifier,
-  created: CreatedComment
+  created: CreatedComment,
+  parent: Comment | undefined
 ) {
   const { comment, kind, questionAuthorId, course, lesson } = created;
   if (kind === "instructor_comment") return;
+  if (parent && parent.deletedAt !== null) return;
 
   const recipientId =
     kind === "discussion_question" ? course.instructorId : questionAuthorId;
@@ -202,7 +191,7 @@ export async function createComment(
     lesson: found.lesson,
   };
 
-  await notifyAboutComment(db, notifier, created);
+  await notifyAboutComment(db, notifier, created, parent);
 
   return created;
 }

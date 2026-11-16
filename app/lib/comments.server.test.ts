@@ -225,6 +225,18 @@ describe("Discussion Reply Notifications", () => {
     ]);
   });
 
+  it("tells nobody about a reply under a deleted comment", async () => {
+    const question = (await ask(student.id)).comment;
+    await deleteComment(db, notifier, question.id, student.id, false, NOW);
+
+    const answer = await reply(base.instructor.id, question.id, "Here's how.");
+
+    expect(answer.kind).toBe("discussion_reply");
+    expect(notifier.notifications).toMatchObject([
+      { kind: "discussion_question" },
+    ]);
+  });
+
   it("sends no Reply Notification for a top-level comment", async () => {
     await ask(student.id);
     await ask(base.instructor.id);

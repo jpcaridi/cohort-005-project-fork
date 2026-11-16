@@ -178,13 +178,13 @@ const COPY: {
     href: data.url,
   }),
   refund_approved: (data) => ({
-    title: `Your Refund Request for ${data.courseTitle} was approved`,
+    title: `Your ${formatPrice(data.amount)} Refund Request for ${data.courseTitle} was approved`,
     snippet: data.decisionNote ? quote(data.decisionNote) : null,
     icon: "refund",
     href: data.url,
   }),
   refund_declined: (data) => ({
-    title: `Your Refund Request for ${data.courseTitle} was declined`,
+    title: `Your ${formatPrice(data.amount)} Refund Request for ${data.courseTitle} was declined`,
     snippet: data.decisionNote
       ? `${quote(data.decisionNote)} You can ask again.`
       : "You can ask again.",
