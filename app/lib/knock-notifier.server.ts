@@ -1,5 +1,7 @@
-import Knock from "@knocklabs/node";
+import Knock, { signUserToken } from "@knocklabs/node";
+import { knockFeedConfig } from "~/lib/notifier.server";
 import type {
+  KnockFeedConfig,
   Notification,
   NotificationKind,
   Notifier,
@@ -29,8 +31,15 @@ function knockUser(person: Person) {
   };
 }
 
-export function knockNotifier(secretKey: string): Notifier {
+/** How long a signed Feed token lasts. Each layout load signs a fresh one. */
+const USER_TOKEN_TTL_SECONDS = 60 * 60;
+
+export function knockNotifier(
+  secretKey: string,
+  options: { feed?: KnockFeedConfig | null } = {}
+): Notifier {
   const knock = new Knock({ apiKey: secretKey });
+  const feed = options.feed === undefined ? knockFeedConfig() : options.feed;
 
   return {
     async notify(notification: Notification) {
@@ -44,6 +53,21 @@ export function knockNotifier(secretKey: string): Notifier {
         },
         { idempotencyKey: notification.idempotencyKey }
       );
+    },
+
+    async signUserToken(userId: number) {
+      if (!feed) return null;
+      const id = knockUserId(userId);
+      return {
+        userId: id,
+        // RS256, `sub` = the Knock user id, with an expiry.
+        userToken: await signUserToken(id, {
+          signingKey: feed.signingKey,
+          expiresInSeconds: USER_TOKEN_TTL_SECONDS,
+        }),
+        publicApiKey: feed.publicApiKey,
+        feedChannelId: feed.feedChannelId,
+      };
     },
   };
 }
