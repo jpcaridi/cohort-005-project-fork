@@ -52,6 +52,7 @@ export default [
   route("login", "routes/login.tsx"),
   route("api/switch-user", "routes/api.switch-user.ts"),
   route("api/notification-token", "routes/api.notification-token.ts"),
+  route("api/notification-preference", "routes/api.notification-preference.ts"),
   route("api/logout", "routes/api.logout.ts"),
   route("api/video-tracking", "routes/api.video-tracking.ts"),
   route("api/set-dev-country", "routes/api.set-dev-country.ts"),

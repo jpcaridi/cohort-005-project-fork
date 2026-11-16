@@ -20,33 +20,17 @@ import { formatPrice } from "~/lib/utils";
 import { listRefundRequestsForBuyer } from "~/lib/refunds.server";
 import { getNotifier } from "~/lib/notifier.server";
 import { syncUser } from "~/lib/user-sync.server";
-import {
-  getNotificationSettings,
-  saveNotificationSetting,
-} from "~/lib/notification-settings.server";
-import type { NotificationCategory } from "~/lib/notifier.server";
+import { getNotificationSettings } from "~/lib/notification-settings.server";
+import type {
+  ByCategory,
+  NotificationCategory,
+} from "~/lib/notification-categories";
 
-const NOTIFICATION_CATEGORIES = [
-  "refund_request_updates",
-  "open_refund_requests",
-  "seat_claims",
-  "enrollments",
-  "discussion_questions",
-  "discussion_replies",
-] as const satisfies readonly NotificationCategory[];
-
-const settingsSchema = z.discriminatedUnion("intent", [
-  z.object({
-    intent: z.literal("profile"),
-    name: z.string().trim().min(1, "Name cannot be empty."),
-    bio: z.string().trim().optional(),
-  }),
-  z.object({
-    intent: z.literal("notification-preference"),
-    category: z.enum(NOTIFICATION_CATEGORIES),
-    enabled: z.enum(["true", "false"]).transform((v) => v === "true"),
-  }),
-]);
+const settingsSchema = z.object({
+  intent: z.literal("profile"),
+  name: z.string().trim().min(1, "Name cannot be empty."),
+  bio: z.string().trim().optional(),
+});
 
 export function meta() {
   return [
@@ -115,22 +99,6 @@ export async function action({ request }: Route.ActionArgs) {
 
   if (!parsed.success) {
     return data({ errors: parsed.errors }, { status: 400 });
-  }
-
-  if (parsed.data.intent === "notification-preference") {
-    const { category, enabled } = parsed.data;
-    const result = await saveNotificationSetting(
-      db,
-      await getNotifier(),
-      currentUser.id,
-      category,
-      enabled
-    );
-    if (!result.ok) {
-      if (result.status === 403) throw data(result.error, { status: 403 });
-      return data({ preferenceError: result.error }, { status: result.status });
-    }
-    return { preferenceSaved: true };
   }
 
   const { name, bio } = parsed.data;
@@ -308,10 +276,7 @@ export default function Settings({ loaderData }: Route.ComponentProps) {
   );
 }
 
-const NOTIFICATION_COPY: Record<
-  NotificationCategory,
-  { label: string; description: string }
-> = {
+const NOTIFICATION_COPY: ByCategory<{ label: string; description: string }> = {
   refund_request_updates: {
     label: "Refund Request updates",
     description: "When a refund request you raised is received or decided.",
@@ -338,6 +303,44 @@ const NOTIFICATION_COPY: Record<
   },
 };
 
+/** Where a switch saves. A resource route: see api.notification-preference.ts. */
+const SAVE_PREFERENCE_URL = "/api/notification-preference";
+
+/**
+ * Saves one switch. Resolves when saved; rejects with a message to show when
+ * the save fails in any way (refused, server error or no network).
+ */
+async function savePreference(category: NotificationCategory, enabled: boolean) {
+  let response: Response;
+  try {
+    response = await fetch(SAVE_PREFERENCE_URL, {
+      method: "POST",
+      body: new URLSearchParams({ category, enabled: String(enabled) }),
+    });
+  } catch {
+    throw new Error("Couldn't reach Cadence. Check your connection and try again.");
+  }
+  if (!response.ok) {
+    const message = await response.text().catch(() => "");
+    throw new Error(
+      response.status === 403 || response.status === 502
+        ? readableError(message)
+        : "Couldn't save your notification setting. Try again."
+    );
+  }
+}
+
+/** The text of a thrown `data("…")` response (JSON-encoded) or a plain one. */
+function readableError(body: string) {
+  try {
+    const parsed: unknown = JSON.parse(body);
+    if (typeof parsed === "string" && parsed) return parsed;
+  } catch {
+    if (body) return body;
+  }
+  return "Couldn't save your notification setting. Try again.";
+}
+
 /** One preference switch. Saves on flip, optimistically; reverts on failure. */
 function NotificationSwitch({
   category,
@@ -346,11 +349,11 @@ function NotificationSwitch({
   category: NotificationCategory;
   enabled: boolean;
 }) {
-  const fetcher = useFetcher<typeof action>();
   const [checked, setChecked] = useState(enabled);
   const id = `notification-${category}`;
   const copy = NOTIFICATION_COPY[category];
 
+  // The last value the server holds, to revert to when a save fails.
   const stored = useRef(enabled);
 
   // Follow the stored value when the loader revalidates.
@@ -359,16 +362,20 @@ function NotificationSwitch({
     setChecked(enabled);
   }, [enabled]);
 
-  useEffect(() => {
-    if (
-      fetcher.state === "idle" &&
-      fetcher.data &&
-      "preferenceError" in fetcher.data
-    ) {
-      toast.error(fetcher.data.preferenceError);
+  async function save(next: boolean) {
+    setChecked(next);
+    try {
+      await savePreference(category, next);
+      stored.current = next;
+    } catch (error) {
+      toast.error(
+        error instanceof Error
+          ? error.message
+          : "Couldn't save your notification setting. Try again."
+      );
       setChecked(stored.current);
     }
-  }, [fetcher.state, fetcher.data]);
+  }
 
   return (
     <div className="flex items-start justify-between gap-4">
@@ -379,17 +386,7 @@ function NotificationSwitch({
       <Switch
         id={id}
         checked={checked}
-        onCheckedChange={(next) => {
-          setChecked(next);
-          fetcher.submit(
-            {
-              intent: "notification-preference",
-              category,
-              enabled: String(next),
-            },
-            { method: "post" }
-          );
-        }}
+        onCheckedChange={(next) => void save(next)}
       />
     </div>
   );
