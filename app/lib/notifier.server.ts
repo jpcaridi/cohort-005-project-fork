@@ -190,6 +190,12 @@ export interface Notifier {
   /** Sends one Notification to its recipients. May throw. */
   notify(notification: Notification): Promise<void>;
   /**
+   * Signs a short-lived token that lets the browser read this person's
+   * Notification Feed, and only theirs. Null when the Feed isn't set up,
+   * in which case the Feed shows its empty state.
+   */
+  signUserToken(userId: number): Promise<FeedAccess | null>;
+  /**
    * Archives every Notification caused by a comment (its Discussion Question
    * or Discussion Reply Notification), so it leaves the Notification Feed.
    * May throw.
@@ -255,6 +261,15 @@ export function mergeNotificationPreferences(
   }
   return merged;
 }
+
+/** What the browser needs to open one person's Notification Feed. */
+export type FeedAccess = {
+  /** The person's id at the vendor. */
+  userId: string;
+  userToken: string;
+  publicApiKey: string;
+  feedChannelId: string;
+};
 
 /**
  * Sends a Notification, logging instead of throwing when it fails. Used by
@@ -322,6 +337,9 @@ export function createFakeNotifier(): FakeNotifier {
     async notify(notification) {
       notifications.push(notification);
     },
+    async signUserToken() {
+      return null;
+    },
     async archiveByComment(commentId) {
       archivedCommentIds.push(commentId);
     },
@@ -348,6 +366,9 @@ export function loggingNotifier(): Notifier {
           .map((r) => r.id)
           .join(", ")}`
       );
+    },
+    async signUserToken() {
+      return null;
     },
     async archiveByComment(commentId) {
       console.info(
@@ -383,6 +404,23 @@ function loadEnv() {
 export function knockSecretKey(): string | undefined {
   loadEnv();
   return process.env.KNOCK_SECRET_API_KEY || process.env.KNOCK_API_KEY;
+}
+
+/** What the Knock adapter needs to sign Feed tokens for the browser. */
+export type KnockFeedConfig = {
+  signingKey: string;
+  publicApiKey: string;
+  feedChannelId: string;
+};
+
+/** The Knock Feed settings, or null when any of them is missing. */
+export function knockFeedConfig(): KnockFeedConfig | null {
+  loadEnv();
+  const signingKey = process.env.KNOCK_SIGNING_KEY;
+  const publicApiKey = process.env.KNOCK_PUBLIC_API_KEY;
+  const feedChannelId = process.env.KNOCK_FEED_CHANNEL_ID;
+  if (!signingKey || !publicApiKey || !feedChannelId) return null;
+  return { signingKey, publicApiKey, feedChannelId };
 }
 
 let defaultNotifier: Promise<Notifier> | undefined;
