@@ -1,0 +1,21 @@
+{
+  "name": "Refund Declined",
+  "description": "Catalogue #2: tells the buyer their Refund Request was declined, with the note. Feed only in v1; an email step can be added later.",
+  "steps": [
+    {
+      "type": "channel",
+      "template": {
+        "action_url": "{{ data.url }}",
+        "markdown_body@": "in_app_feed_1/markdown_body.md"
+      },
+      "ref": "in_app_feed_1",
+      "channel_type": "in_app_feed",
+      "channel_key": "in-app"
+    }
+  ],
+  "categories": [
+    "refund-request-updates"
+  ],
+  "trigger_frequency": "every_trigger",
+  "$schema": "https://schemas.knock.app/cli/workflow.json"
+}
