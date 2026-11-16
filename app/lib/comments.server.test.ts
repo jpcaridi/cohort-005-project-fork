@@ -232,6 +232,7 @@ describe("Discussion Reply Notifications", () => {
   it("still posts the reply, and logs, when the Notifier fails", async () => {
     const question = (await ask(student.id)).comment;
     const failing: Notifier = {
+      ...createFakeNotifier(),
       async notify() {
         throw new Error("Knock is down");
       },

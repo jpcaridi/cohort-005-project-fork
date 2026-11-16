@@ -68,6 +68,65 @@ export const NOTIFICATION_CATEGORY: Record<
 export interface Notifier {
   /** Sends one Notification to its recipients. May throw. */
   notify(notification: Notification): Promise<void>;
+  /** Creates or updates the person (name, email, avatar). May throw. */
+  syncUser(person: Person): Promise<void>;
+  /** The person's preferences, or null when they have none yet. May throw. */
+  getPreferences(userId: number): Promise<NotificationPreferences | null>;
+  /**
+   * Merges these preferences into the person's set; categories and channels
+   * left out keep their current value. May throw.
+   */
+  mergePreferences(
+    userId: number,
+    preferences: NotificationPreferences
+  ): Promise<void>;
+  /**
+   * Switches one category on one channel, leaving every other preference
+   * untouched. May throw.
+   */
+  setPreference(userId: number, change: PreferenceChange): Promise<void>;
+}
+
+// ─── Preferences ───
+
+/** Whether each category reaches the person on each channel. */
+export type NotificationPreferences = Partial<
+  Record<NotificationCategory, Partial<Record<NotificationChannel, boolean>>>
+>;
+
+/** One category × channel switch. */
+export type PreferenceChange = {
+  category: NotificationCategory;
+  channel: NotificationChannel;
+  enabled: boolean;
+};
+
+/**
+ * What a person starts with: Enrollments off, every other category on, on
+ * the Feed (the only channel in v1).
+ */
+export const DEFAULT_PREFERENCES = {
+  refund_request_updates: { feed: true },
+  open_refund_requests: { feed: true },
+  seat_claims: { feed: true },
+  enrollments: { feed: false },
+  discussion_questions: { feed: true },
+  discussion_replies: { feed: true },
+} satisfies Record<NotificationCategory, Record<NotificationChannel, boolean>>;
+
+/** Deep-merges `changes` into `preferences`, as Knock's merge strategy does. */
+export function mergeNotificationPreferences(
+  preferences: NotificationPreferences,
+  changes: NotificationPreferences
+): NotificationPreferences {
+  const merged: NotificationPreferences = { ...preferences };
+  for (const [category, channels] of Object.entries(changes) as [
+    NotificationCategory,
+    Partial<Record<NotificationChannel, boolean>>,
+  ][]) {
+    merged[category] = { ...merged[category], ...channels };
+  }
+  return merged;
 }
 
 /**
@@ -91,14 +150,40 @@ export async function notifySafely(
 export type FakeNotifier = Notifier & {
   /** Every Notification sent, in order. */
   notifications: Notification[];
+  /** Every user sync, in order. */
+  syncedUsers: Person[];
+  /** Each person's stored preferences, by user id. */
+  preferences: Map<number, NotificationPreferences>;
 };
 
 export function createFakeNotifier(): FakeNotifier {
   const notifications: Notification[] = [];
+  const syncedUsers: Person[] = [];
+  const preferences = new Map<number, NotificationPreferences>();
+  const merge = (userId: number, changes: NotificationPreferences) => {
+    preferences.set(
+      userId,
+      mergeNotificationPreferences(preferences.get(userId) ?? {}, changes)
+    );
+  };
   return {
     notifications,
+    syncedUsers,
+    preferences,
     async notify(notification) {
       notifications.push(notification);
+    },
+    async syncUser(person) {
+      syncedUsers.push({ ...person });
+    },
+    async getPreferences(userId) {
+      return preferences.get(userId) ?? null;
+    },
+    async mergePreferences(userId, changes) {
+      merge(userId, changes);
+    },
+    async setPreference(userId, { category, channel, enabled }) {
+      merge(userId, { [category]: { [channel]: enabled } });
     },
   };
 }
@@ -110,6 +195,17 @@ export function loggingNotifier(): Notifier {
         `[notifier] No Knock key set; not sending ${notification.kind} (${notification.idempotencyKey}) to ${notification.recipients
           .map((r) => r.id)
           .join(", ")}`
+      );
+    },
+    // Quiet: the seed syncs every user.
+    async syncUser() {},
+    async getPreferences() {
+      return null;
+    },
+    async mergePreferences() {},
+    async setPreference(userId, change) {
+      console.info(
+        `[notifier] No Knock key set; not saving ${change.category}/${change.channel}=${change.enabled} for user ${userId}`
       );
     },
   };
