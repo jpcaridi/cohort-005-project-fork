@@ -1,4 +1,4 @@
-import { useRef, useEffect } from "react";
+import { useRef, useEffect, useState } from "react";
 import { useFetcher } from "react-router";
 import { toast } from "sonner";
 import { z } from "zod";
@@ -10,6 +10,7 @@ import { Button } from "~/components/ui/button";
 import { Input } from "~/components/ui/input";
 import { Label } from "~/components/ui/label";
 import { Textarea } from "~/components/ui/textarea";
+import { Switch } from "~/components/ui/switch";
 import { UserRole, RefundStatus, users } from "~/db/schema";
 import { AlertTriangle } from "lucide-react";
 import { data, isRouteErrorResponse, Link } from "react-router";
@@ -19,11 +20,33 @@ import { formatPrice } from "~/lib/utils";
 import { listRefundRequestsForBuyer } from "~/lib/refunds.server";
 import { getNotifier } from "~/lib/notifier.server";
 import { syncUser } from "~/lib/user-sync.server";
+import {
+  getNotificationSettings,
+  saveNotificationSetting,
+} from "~/lib/notification-settings.server";
+import type { NotificationCategory } from "~/lib/notifier.server";
 
-const settingsSchema = z.object({
-  name: z.string().trim().min(1, "Name cannot be empty."),
-  bio: z.string().trim().optional(),
-});
+const NOTIFICATION_CATEGORIES = [
+  "refund_request_updates",
+  "open_refund_requests",
+  "seat_claims",
+  "enrollments",
+  "discussion_questions",
+  "discussion_replies",
+] as const satisfies readonly NotificationCategory[];
+
+const settingsSchema = z.discriminatedUnion("intent", [
+  z.object({
+    intent: z.literal("profile"),
+    name: z.string().trim().min(1, "Name cannot be empty."),
+    bio: z.string().trim().optional(),
+  }),
+  z.object({
+    intent: z.literal("notification-preference"),
+    category: z.enum(NOTIFICATION_CATEGORIES),
+    enabled: z.enum(["true", "false"]).transform((v) => v === "true"),
+  }),
+]);
 
 export function meta() {
   return [
@@ -52,6 +75,11 @@ export async function loader({ request }: Route.LoaderArgs) {
   }
 
   const refundRequests = listRefundRequestsForBuyer(db, currentUserId);
+  const notificationSettings = await getNotificationSettings(
+    db,
+    await getNotifier(),
+    currentUserId
+  );
 
   return {
     user: {
@@ -62,6 +90,7 @@ export async function loader({ request }: Route.LoaderArgs) {
       role: currentUser.role,
     },
     refundRequests,
+    notificationSettings,
   };
 }
 
@@ -88,6 +117,22 @@ export async function action({ request }: Route.ActionArgs) {
     return data({ errors: parsed.errors }, { status: 400 });
   }
 
+  if (parsed.data.intent === "notification-preference") {
+    const { category, enabled } = parsed.data;
+    const result = await saveNotificationSetting(
+      db,
+      await getNotifier(),
+      currentUser.id,
+      category,
+      enabled
+    );
+    if (!result.ok) {
+      if (result.status === 403) throw data(result.error, { status: 403 });
+      return data({ preferenceError: result.error }, { status: result.status });
+    }
+    return { preferenceSaved: true };
+  }
+
   const { name, bio } = parsed.data;
 
   const updatedUser = db
@@ -103,7 +148,7 @@ export async function action({ request }: Route.ActionArgs) {
 }
 
 export default function Settings({ loaderData }: Route.ComponentProps) {
-  const { user, refundRequests } = loaderData;
+  const { user, refundRequests, notificationSettings } = loaderData;
   const openCount = refundRequests.filter(
     (refundRequest) => refundRequest.status === RefundStatus.Open
   ).length;
@@ -144,6 +189,7 @@ export default function Settings({ loaderData }: Route.ComponentProps) {
         </CardHeader>
         <CardContent>
           <fetcher.Form method="post" className="space-y-4">
+            <input type="hidden" name="intent" value="profile" />
             <div className="space-y-2">
               <Label htmlFor="name">Name</Label>
               <Input
@@ -190,6 +236,24 @@ export default function Settings({ loaderData }: Route.ComponentProps) {
               {fetcher.state !== "idle" ? "Saving..." : "Save Changes"}
             </Button>
           </fetcher.Form>
+        </CardContent>
+      </Card>
+
+      <Card id="notifications" className="mt-8 max-w-md scroll-mt-6">
+        <CardHeader>
+          <h2 className="text-lg font-semibold">Notifications</h2>
+          <p className="text-sm text-muted-foreground">
+            Choose what reaches your notification feed.
+          </p>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {notificationSettings.map((setting) => (
+            <NotificationSwitch
+              key={setting.category}
+              category={setting.category}
+              enabled={setting.enabled}
+            />
+          ))}
         </CardContent>
       </Card>
 
@@ -240,6 +304,93 @@ export default function Settings({ loaderData }: Route.ComponentProps) {
           </CardContent>
         </Card>
       )}
+    </div>
+  );
+}
+
+const NOTIFICATION_COPY: Record<
+  NotificationCategory,
+  { label: string; description: string }
+> = {
+  refund_request_updates: {
+    label: "Refund Request updates",
+    description: "When a refund request you raised is received or decided.",
+  },
+  open_refund_requests: {
+    label: "Open Refund Requests",
+    description: "When a buyer raises a refund request for review.",
+  },
+  seat_claims: {
+    label: "Seat claims",
+    description: "When a student claims a seat on your team licence.",
+  },
+  enrollments: {
+    label: "Enrollments",
+    description: "When a student enrolls on a course you teach.",
+  },
+  discussion_questions: {
+    label: "Discussion Questions",
+    description: "When someone asks a question on one of your lessons.",
+  },
+  discussion_replies: {
+    label: "Discussion Replies",
+    description: "When someone replies to your comment.",
+  },
+};
+
+/** One preference switch. Saves on flip, optimistically; reverts on failure. */
+function NotificationSwitch({
+  category,
+  enabled,
+}: {
+  category: NotificationCategory;
+  enabled: boolean;
+}) {
+  const fetcher = useFetcher<typeof action>();
+  const [checked, setChecked] = useState(enabled);
+  const id = `notification-${category}`;
+  const copy = NOTIFICATION_COPY[category];
+
+  const stored = useRef(enabled);
+
+  // Follow the stored value when the loader revalidates.
+  useEffect(() => {
+    stored.current = enabled;
+    setChecked(enabled);
+  }, [enabled]);
+
+  useEffect(() => {
+    if (
+      fetcher.state === "idle" &&
+      fetcher.data &&
+      "preferenceError" in fetcher.data
+    ) {
+      toast.error(fetcher.data.preferenceError);
+      setChecked(stored.current);
+    }
+  }, [fetcher.state, fetcher.data]);
+
+  return (
+    <div className="flex items-start justify-between gap-4">
+      <div className="space-y-1">
+        <Label htmlFor={id}>{copy.label}</Label>
+        <p className="text-xs text-muted-foreground">{copy.description}</p>
+      </div>
+      <Switch
+        id={id}
+        checked={checked}
+        onCheckedChange={(next) => {
+          setChecked(next);
+          fetcher.submit(
+            {
+              intent: "notification-preference",
+              category,
+              enabled: String(next),
+            },
+            { method: "post" }
+          );
+        }}
+      />
     </div>
   );
 }
