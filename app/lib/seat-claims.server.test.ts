@@ -7,7 +7,8 @@ import {
   type FakeNotifier,
   type Notifier,
 } from "./notifier.server";
-import { claimSeat } from "./seat-claims.server";
+import { sql } from "drizzle-orm";
+import { claimSeat, SeatClaimRefused } from "./seat-claims.server";
 
 type TestDb = ReturnType<typeof createTestDb>;
 
@@ -65,21 +66,18 @@ function buyTeamLicence(seatCount: number, country: string | null = null) {
 }
 
 describe("claimSeat", () => {
-  it("claims the Seat, enrolls the Student and says who owns the Team Licence and how many Seats are left", async () => {
-    const { purchase, seats } = buyTeamLicence(3);
+  it("claims the Seat, enrolls the Student and says how many Seats are left", async () => {
+    const { seats } = buyTeamLicence(3);
 
     const result = await claimSeat(db, notifier, seats[0].code, base.user.id, "", NOW);
 
     expect(result).toMatchObject({
-      ok: true,
       seat: {
         id: seats[0].id,
         redeemedByUserId: base.user.id,
         redeemedAt: NOW.toISOString(),
       },
-      teamLicence: { id: purchase.id },
-      teamAdmin: { id: teamAdmin.id, name: "Tess" },
-      course: { id: base.course.id, title: "Test Course" },
+      course: { id: base.course.id, title: "Test Course", slug: "test-course" },
       seatsLeft: 2,
       enrollment: { userId: base.user.id, courseId: base.course.id },
     });
@@ -91,24 +89,22 @@ describe("claimSeat", () => {
 
     const result = await claimSeat(db, notifier, seats[1].code, addUser("Sam").id, "", NOW);
 
-    expect(result).toMatchObject({ ok: true, seatsLeft: 0 });
+    expect(result).toMatchObject({ seatsLeft: 0 });
   });
 
   it("refuses an unknown code", async () => {
-    expect(await claimSeat(db, notifier, "NOPE", base.user.id, "", NOW)).toEqual({
-      ok: false,
-      error: "Coupon not found",
-    });
+    await expect(
+      claimSeat(db, notifier, "NOPE", base.user.id, "", NOW)
+    ).rejects.toThrow(new SeatClaimRefused("Seat not found"));
   });
 
   it("refuses a Seat someone already claimed", async () => {
     const { seats } = buyTeamLicence(1);
     await claimSeat(db, notifier, seats[0].code, addUser("Sam").id, "", NOW);
 
-    expect(await claimSeat(db, notifier, seats[0].code, base.user.id, "", NOW)).toEqual({
-      ok: false,
-      error: "Coupon has already been redeemed",
-    });
+    await expect(
+      claimSeat(db, notifier, seats[0].code, base.user.id, "", NOW)
+    ).rejects.toThrow(new SeatClaimRefused("This Seat has already been claimed"));
   });
 
   it("refuses a Seat on hold while its Team Licence has an Open Refund Request", async () => {
@@ -122,9 +118,9 @@ describe("claimSeat", () => {
       })
       .run();
 
-    const result = await claimSeat(db, notifier, seats[0].code, base.user.id, "", NOW);
-
-    expect(result).toMatchObject({ ok: false });
+    await expect(
+      claimSeat(db, notifier, seats[0].code, base.user.id, "", NOW)
+    ).rejects.toBeInstanceOf(SeatClaimRefused);
   });
 
   it("refuses a Student who already has an Enrollment on the course", async () => {
@@ -133,20 +129,52 @@ describe("claimSeat", () => {
       .values({ userId: base.user.id, courseId: base.course.id })
       .run();
 
-    expect(await claimSeat(db, notifier, seats[0].code, base.user.id, "", NOW)).toEqual({
-      ok: false,
-      error: "You are already enrolled in this course",
-    });
+    await expect(
+      claimSeat(db, notifier, seats[0].code, base.user.id, "", NOW)
+    ).rejects.toThrow(new SeatClaimRefused("You are already enrolled in this course"));
   });
 
   it("refuses a claim from a different country than the purchaser's", async () => {
     const { seats } = buyTeamLicence(1, "GB");
 
-    expect(await claimSeat(db, notifier, seats[0].code, base.user.id, "IN", NOW)).toEqual({
-      ok: false,
-      error:
-        "This coupon can only be redeemed from the same country as the purchaser",
-    });
+    await expect(
+      claimSeat(db, notifier, seats[0].code, base.user.id, "IN", NOW)
+    ).rejects.toThrow(
+      new SeatClaimRefused(
+        "This Seat can only be claimed from the country its Team Licence was bought in"
+      )
+    );
+  });
+
+  it("never names the Seat a coupon, code or voucher in what it tells the Student", async () => {
+    const { seats } = buyTeamLicence(1, "GB");
+    const refusals = [
+      claimSeat(db, notifier, "NOPE", base.user.id, "", NOW),
+      claimSeat(db, notifier, seats[0].code, base.user.id, "IN", NOW),
+    ];
+
+    for (const refusal of refusals) {
+      await expect(refusal).rejects.toThrow(/^(?!.*(coupon|code|voucher)).*$/i);
+    }
+  });
+
+  it("leaves the Seat Unclaimed when the Enrollment can't be saved", async () => {
+    const { seats } = buyTeamLicence(1);
+    db.run(
+      sql`CREATE TRIGGER no_enrollments BEFORE INSERT ON enrollments BEGIN SELECT RAISE(ABORT, 'enrollments are down'); END`
+    );
+
+    await expect(
+      claimSeat(db, notifier, seats[0].code, base.user.id, "", NOW)
+    ).rejects.toThrow("enrollments are down");
+
+    const seat = db
+      .select()
+      .from(schema.coupons)
+      .all()
+      .find((s) => s.id === seats[0].id);
+    expect(seat).toMatchObject({ redeemedByUserId: null, redeemedAt: null });
+    expect(notifier.notifications).toEqual([]);
   });
 });
 
@@ -224,7 +252,7 @@ describe("Seat-claim Notifications", () => {
   });
 
   it("sends nothing when the claim is refused", async () => {
-    await claimSeat(db, notifier, "NOPE", base.user.id, "", NOW);
+    await claimSeat(db, notifier, "NOPE", base.user.id, "", NOW).catch(() => {});
 
     expect(notifier.notifications).toEqual([]);
   });
@@ -248,7 +276,7 @@ describe("Seat-claim Notifications", () => {
       NOW
     );
 
-    expect(result).toMatchObject({ ok: true, seatsLeft: 0 });
+    expect(result).toMatchObject({ seatsLeft: 0 });
     expect(error).toHaveBeenCalledWith(
       `Notification seat_claimed (seat-claimed:${seats[0].id}) failed:`,
       expect.any(Error)

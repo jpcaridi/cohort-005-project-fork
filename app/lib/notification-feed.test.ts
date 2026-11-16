@@ -133,7 +133,7 @@ describe("describeNotification", () => {
       "Alex Rivera"
     );
     expect(withNote.title).toBe(
-      "Your Refund Request for TypeScript Fundamentals was approved"
+      "Your $149.00 Refund Request for TypeScript Fundamentals was approved"
     );
     expect(withNote.snippet).toBe("“Sorry to see you go.”");
     expect(withNote.href).toBe("/settings");
@@ -154,7 +154,7 @@ describe("describeNotification", () => {
       "Alex Rivera"
     );
     expect(row.title).toBe(
-      "Your Refund Request for TypeScript Fundamentals was declined"
+      "Your $149.00 Refund Request for TypeScript Fundamentals was declined"
     );
     expect(row.snippet).toBe("“Over half watched.” You can ask again.");
     expect(row.icon).toBe("refund");

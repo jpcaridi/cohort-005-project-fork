@@ -1,8 +1,9 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 import { createTestDb, seedBaseData } from "~/test/setup";
 import * as schema from "~/db/schema";
 import {
   getNotificationSettings,
+  NotificationSettingNotSaved,
   saveNotificationSetting,
 } from "./notification-settings.server";
 import {
@@ -229,7 +230,7 @@ describe("saveNotificationSetting", () => {
       discussion_replies: { feed: true },
     });
 
-    const result = await saveNotificationSetting(
+    await saveNotificationSetting(
       db,
       notifier,
       base.instructor.id,
@@ -237,7 +238,6 @@ describe("saveNotificationSetting", () => {
       true
     );
 
-    expect(result).toEqual({ ok: true });
     expect(notifier.preferences.get(base.instructor.id)).toEqual({
       enrollments: { feed: true },
       discussion_questions: { feed: false },
@@ -246,7 +246,7 @@ describe("saveNotificationSetting", () => {
   });
 
   it("writes nothing for a switch the person can't see", async () => {
-    const result = await saveNotificationSetting(
+    const saving = saveNotificationSetting(
       db,
       notifier,
       base.user.id,
@@ -254,11 +254,8 @@ describe("saveNotificationSetting", () => {
       false
     );
 
-    expect(result).toEqual({
-      ok: false,
-      status: 403,
-      error: expect.any(String),
-    });
+    await expect(saving).rejects.toBeInstanceOf(NotificationSettingNotSaved);
+    await expect(saving).rejects.toMatchObject({ status: 403 });
     expect(notifier.preferences.has(base.user.id)).toBe(false);
   });
 
@@ -270,7 +267,9 @@ describe("saveNotificationSetting", () => {
       },
     };
 
-    const result = await saveNotificationSetting(
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const saving = saveNotificationSetting(
       db,
       failing,
       base.user.id,
@@ -278,10 +277,8 @@ describe("saveNotificationSetting", () => {
       false
     );
 
-    expect(result).toEqual({
-      ok: false,
-      status: 502,
-      error: expect.any(String),
-    });
+    await expect(saving).rejects.toBeInstanceOf(NotificationSettingNotSaved);
+    await expect(saving).rejects.toMatchObject({ status: 502 });
+    error.mockRestore();
   });
 });

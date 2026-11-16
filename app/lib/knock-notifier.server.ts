@@ -1,10 +1,10 @@
 import Knock, { NotFoundError, signUserToken } from "@knocklabs/node";
 import type { PreferenceSet } from "@knocklabs/node/resources/recipients/preferences";
 import { knockFeedConfig } from "~/lib/notifier.server";
+import { entriesOf, type ByCategory } from "~/lib/notification-categories";
 import type {
   KnockFeedConfig,
   Notification,
-  NotificationCategory,
   NotificationChannel,
   NotificationKind,
   NotificationPreferences,
@@ -144,7 +144,7 @@ export function knockNotifier(
 
 const PREFERENCE_SET = "default";
 
-export const CATEGORY_KEY: Record<NotificationCategory, string> = {
+export const CATEGORY_KEY: ByCategory<string> = {
   refund_request_updates: "refund-request-updates",
   open_refund_requests: "open-refund-requests",
   seat_claims: "seat-claims",
@@ -164,15 +164,9 @@ function toKnockCategories(preferences: NotificationPreferences) {
     string,
     { channel_types: Partial<Record<"in_app_feed", boolean>> }
   > = {};
-  for (const [category, channels] of Object.entries(preferences) as [
-    NotificationCategory,
-    Partial<Record<NotificationChannel, boolean>>,
-  ][]) {
+  for (const [category, channels] of entriesOf(preferences)) {
     const channelTypes: Partial<Record<"in_app_feed", boolean>> = {};
-    for (const [channel, enabled] of Object.entries(channels) as [
-      NotificationChannel,
-      boolean,
-    ][]) {
+    for (const [channel, enabled] of entriesOf(channels)) {
       channelTypes[CHANNEL_TYPE[channel]] = enabled;
     }
     categories[CATEGORY_KEY[category]] = { channel_types: channelTypes };
@@ -186,17 +180,11 @@ function fromKnockCategories(
 ): NotificationPreferences | null {
   if (!categories) return null;
   const preferences: NotificationPreferences = {};
-  for (const [category, key] of Object.entries(CATEGORY_KEY) as [
-    NotificationCategory,
-    string,
-  ][]) {
+  for (const [category, key] of entriesOf(CATEGORY_KEY)) {
     const setting = categories[key];
     if (setting === undefined) continue;
     const channels: Partial<Record<NotificationChannel, boolean>> = {};
-    for (const [channel, type] of Object.entries(CHANNEL_TYPE) as [
-      NotificationChannel,
-      "in_app_feed",
-    ][]) {
+    for (const [channel, type] of entriesOf(CHANNEL_TYPE)) {
       if (typeof setting === "boolean") {
         channels[channel] = setting;
       } else {

@@ -8,12 +8,12 @@ import {
   checkRefundRequest,
   declineRefundRequest,
   getRefundOffer,
-  getSeatAvailability,
   listRefundRequestsForBuyer,
   listRefundRequestsForReview,
   listTeamLicences,
   raiseRefundRequest,
 } from "./refunds.server";
+import { getSeatAvailability } from "./seats.server";
 import {
   createFakeNotifier,
   type FakeNotifier,
