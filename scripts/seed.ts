@@ -2070,6 +2070,40 @@ This course is still in draft while the cluster examples are rewritten against t
 
   console.log(`Created ${countRows(schema.lessonProgress)} lesson progress records.`);
 
+  // ─── Bookmarks and Notes ───
+  // Private to each Student. Emma has a few on lessons she wants to revisit.
+
+  db.insert(schema.bookmarks)
+    .values([
+      { userId: students[0].id, lessonId: course1LessonIds[4], createdAt: daysAgo(44) },
+      { userId: students[0].id, lessonId: course2LessonIds[6], createdAt: daysAgo(30) },
+      { userId: students[2].id, lessonId: course1LessonIds[1], createdAt: daysAgo(29) },
+    ])
+    .run();
+
+  db.insert(schema.notes)
+    .values([
+      {
+        userId: students[0].id,
+        lessonId: course1LessonIds[4],
+        body: "Rewatch the part on generics.\nTry the exercise again without the hint.",
+        createdAt: daysAgo(44),
+        updatedAt: daysAgo(40),
+      },
+      {
+        userId: students[2].id,
+        lessonId: course2LessonIds[2],
+        body: "Ask about * vs ** here — the video goes fast.",
+        createdAt: daysAgo(27),
+        updatedAt: daysAgo(27),
+      },
+    ])
+    .run();
+
+  console.log(
+    `Created ${countRows(schema.bookmarks)} bookmarks and ${countRows(schema.notes)} notes.`
+  );
+
   // ─── Quiz Attempts ───
 
   // Helper to record a quiz attempt with answers
